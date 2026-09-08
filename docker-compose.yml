@@ -1,0 +1,184 @@
+services:
+  # ========== БАЗЫ ДАННЫХ ==========
+  postgres-auth:
+    image: postgres:15-alpine
+    container_name: postgres-auth
+    environment:
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_pass
+      POSTGRES_DB: auth_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-auth-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres-catalog:
+    image: postgres:15-alpine
+    container_name: postgres-catalog
+    environment:
+      POSTGRES_USER: catalog_user
+      POSTGRES_PASSWORD: catalog_pass
+      POSTGRES_DB: catalog_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-catalog-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catalog_user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres-order:
+    image: postgres:15-alpine
+    container_name: postgres-order
+    environment:
+      POSTGRES_USER: order_user
+      POSTGRES_PASSWORD: order_pass
+      POSTGRES_DB: order_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-order-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U order_user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres-payment:
+    image: postgres:15-alpine
+    container_name: postgres-payment
+    environment:
+      POSTGRES_USER: payment_user
+      POSTGRES_PASSWORD: payment_pass
+      POSTGRES_DB: payment_db
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres-payment-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payment_user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis-cart:
+    image: redis:7-alpine
+    container_name: redis-cart
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-cart-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mongodb-analytics:
+    image: mongo:6
+    container_name: mongodb-analytics
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-analytics-data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ========== МИКРОСЕРВИСЫ ==========
+  auth-service:
+    build: ./services/auth-service
+    container_name: auth-service
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-auth:5432/auth_db
+      SPRING_DATASOURCE_USERNAME: auth_user
+      SPRING_DATASOURCE_PASSWORD: auth_pass
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+
+  catalog-service:
+    build: ./services/catalog-service
+    container_name: catalog-service
+    ports:
+      - "8082:8082"
+    environment:
+      CATALOG_DB_HOST: postgres-catalog
+      CATALOG_DB_USER: catalog_user
+      CATALOG_DB_PASSWORD: catalog_pass
+      CATALOG_DB_NAME: catalog_db
+    depends_on:
+      postgres-catalog:
+        condition: service_healthy
+
+  cart-service:
+    build: ./services/cart-service
+    container_name: cart-service
+    ports:
+      - "8083:8083"
+    environment:
+      REDIS_HOST: redis-cart
+      REDIS_PORT: 6379
+    depends_on:
+      redis-cart:
+        condition: service_healthy
+
+  order-service:
+    build: ./services/order-service
+    container_name: order-service
+    ports:
+      - "8084:8084"
+    environment:
+      - ASPNETCORE_URLS=http://+:8084
+      - ConnectionStrings__DefaultConnection=Host=postgres-order;Database=order_db;Username=order_user;Password=order_pass
+    depends_on:
+      postgres-order:
+        condition: service_healthy
+
+  payment-service:
+    build: ./services/payment-service
+    container_name: payment-service
+    ports:
+      - "8085:8085"
+    environment:
+      DATABASE_URL: postgresql://payment_user:payment_pass@postgres-payment:5432/payment_db
+    depends_on:
+      postgres-payment:
+        condition: service_healthy
+
+  api-gateway:
+    build: ./services/api-gateway
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8081
+      CATALOG_SERVICE_URL: http://catalog-service:8082
+      CART_SERVICE_URL: http://cart-service:8083
+      ORDER_SERVICE_URL: http://order-service:8084
+      PAYMENT_SERVICE_URL: http://payment-service:8085
+    depends_on:
+      - auth-service
+      - catalog-service
+      - cart-service
+      - order-service
+      - payment-service
+
+volumes:
+  postgres-auth-data:
+  postgres-catalog-data:
+  postgres-order-data:
+  postgres-payment-data:
+  redis-cart-data:
+  mongo-analytics-data:
