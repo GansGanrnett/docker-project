@@ -1,2 +1,9 @@
 server:
   port: 8081
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres-auth:5432/auth_db
+    username: auth_user
+    password: auth_pass
+  jpa:
+    hibernate.ddl-auto: update
