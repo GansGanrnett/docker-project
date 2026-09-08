@@ -1,8 +1,11 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.22.0-alpine AS builder
 WORKDIR /app
-COPY go.mod .
-COPY cmd/ ./cmd/
-RUN go build -o catalog ./cmd/main.go
+
+COPY go.mod go.sum ./
+RUN go mod download   # всё равно полезно для кеширования
+
+COPY . .
+RUN go build -mod=mod -o catalog ./cmd/main.go
 
 FROM alpine:latest
 WORKDIR /app
