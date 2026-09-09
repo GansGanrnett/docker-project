@@ -1,20 +1,12 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM ://microsoft.com AS builder
 WORKDIR /app
-
-# Копируем только .csproj и восстанавливаем зависимости
 COPY src/OrderService/*.csproj ./src/OrderService/
 RUN dotnet restore ./src/OrderService/OrderService.csproj
-
-# Копируем весь остальной код
 COPY . .
+RUN dotnet publish src/OrderService/OrderService.csproj -c Release -o out
 
-# Собираем и публикуем
-WORKDIR /app/src/OrderService
-RUN dotnet publish -c Release -o out
-
-# Финальный образ
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
+FROM ://microsoft.com
 WORKDIR /app
-COPY --from=build /app/src/OrderService/out .
-EXPOSE 8084
-ENTRYPOINT ["dotnet", "OrderService.dll"]
+COPY --from=builder /app/out .
+EXPOSE 8080
+CMD ["dotnet", "OrderService.dll"]

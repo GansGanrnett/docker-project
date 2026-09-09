@@ -9,7 +9,6 @@ on:
       - project
 
 env:
-  # Adjusted to strictly match standard docker.io formatting: docker.io/username
   REGISTRY: docker.io/${{ secrets.DOCKER_USERNAME }}
   IMAGE_TAG: ${{ github.sha }}
 
@@ -37,7 +36,6 @@ jobs:
               - 'infrastructure/**'
             services:
               - 'services/**'
-              - 'api-gateway/**'
             scripts:
               - 'scripts/**'
               - 'docker-compose.yml'
@@ -55,21 +53,19 @@ jobs:
       - name: Install openapi-generator
         run: |
           npm install -g @openapitools/openapi-generator-cli
-          # Настоятельно рекомендуется зафиксировать CLI версию для стабильности пайплайна
           openapi-generator-cli version-manager set 7.4.0
       - name: Validate OpenAPI specs
         run: |
-          # Добавлен флаг проверки существования файлов, чтобы цикл не падал на пустой итерации
           shopt -s nullglob
           for f in shared/api-contracts/openapi/*.yaml; do
             echo "Validating OpenAPI file: $f"
             openapi-generator-cli validate -i "$f"
           done
       - name: Install protoc
-        uses: arduino/setup-protoc@v3 # Обновлено до актуальной v3 (v2 бросает депрекейшн ворнинги)
+        uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Generate code from proto (check syntax)
+      - name: Check Proto syntax
         run: |
           shopt -s nullglob
           for f in shared/api-contracts/*.proto; do
@@ -88,42 +84,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Helm
-        uses: azure/setup-helm@v4 # Обновлено с v3 до v4
+        uses: azure/setup-helm@v4
       - name: Lint Helm charts
         run: |
           shopt -s nullglob
           for chart in infrastructure/kubernetes/helm-charts/*; do
             if [ -d "$chart" ]; then
+              echo "Linting chart: $chart"
               helm lint "$chart"
             fi
           done
       - name: Validate Kubernetes manifests (Kube-linter)
-        # Внимание: instrumenta/kubeval-action заброшен и не поддерживает современные K8s API (v1.22+).
-        # Заменено на современный и поддерживаемый линтер манифестов stackrox/kube-linter
         uses: stackrox/kube-linter-action@v1.0.4
         with:
           directory: infrastructure/kubernetes/base/
 
   # ==========================================
-  # 3. СБОРКА И ПУБЛИКАЦИЯ СЕРВИСОВ
+  # 3. СБОРКА И ПУБЛИКАЦИЯ СЕРВИСОВ (Специфика Полиглота)
   # ==========================================
   build-services:
     name: Build & Push Docker images
     runs-on: ubuntu-latest
-    # Удален жесткий блокирующий needs: [validate-contracts, lint-infrastructure].
-    # Теперь изменения в коде сервисов НЕ ждут проверки контрактов, если папка shared не менялась.
     needs: changes
     if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
     strategy:
-      fail-fast: false # Если один сервис упадет при сборке, остальные достроятся до конца
+      fail-fast: false
       matrix:
+        # Строго ваши папки из репозитория
         service:
-          - auth-service
-          - catalog-service
-          - cart-service
-          - order-service
-          - payment-service
-          - api-gateway
+          - auth-service          # Java (Maven / pom.xml)
+          - catalog-service       # Go (go.mod)
+          - cart-service          # Node.js (package.json)
+          - order-service         # .NET (OrderService.csproj)
+          - payment-service       # Python (requirements.txt)
+          - analytics-service     # Python (requirements.txt)
+          - api-gateway           # Node.js (package.json)
     steps:
       - uses: actions/checkout@v4
 
@@ -137,11 +132,10 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6 # Обновлено до v6
+        uses: docker/build-push-action@v6
         with:
-          # Исправлен путь контекста для api-gateway (если он лежит отдельно от /services)
-          context: ${{ matrix.service == 'api-gateway' && './api-gateway' || format('./services/{0}', matrix.service) }}
-          file: ${{ matrix.service == 'api-gateway' && './api-gateway/Dockerfile' || format('./services/{0}/Dockerfile', matrix.service) }}
+          context: ./services/${{ matrix.service }}
+          file: ./services/${{ matrix.service }}/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ${{ env.REGISTRY }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
@@ -163,32 +157,5 @@ jobs:
         uses: ludeeus/action-shellcheck@master
         with:
           scandir: './scripts'
-        # Если папка scripts/ пуста, нативный find бросит ошибку. Экшен корректно обработает структуру.
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
-
-  # ==========================================
-  # 5. ДЕПЛОЙ (Только при пуше в branch project)
-  # ==========================================
-  deploy:
-    name: Trigger ArgoCD sync
-    runs-on: ubuntu-latest
-    # Так как сборка и линтинг теперь независимы, деплой ждет ВСЕ потенциально запущенные jobs
-    needs: [build-services, check-scripts, validate-contracts, lint-infrastructure]
-    if: always() && github.ref == 'refs/heads/project' && github.event_name == 'push' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
-    steps:
-      - name: Install ArgoCD CLI
-        run: |
-          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          chmod +x /usr/local/bin/argocd
-      - name: Sync ArgoCD application
-        env:
-          ARGO_SERVER: ${{ secrets.ARGO_SERVER }}
-          ARGO_TOKEN: ${{ secrets.ARGO_TOKEN }}
-        run: |
-          # Добавлен флаг --insecure, если ваш ArgoCD использует самоподписанные SSL-сертификаты (часто в Dev-средах)
-          argocd app sync ecommerce-app \
-            --server "$ARGO_SERVER" \
-            --auth-token "$ARGO_TOKEN" \
-            --insecure \
-            --prune
