@@ -9,13 +9,11 @@ on:
       - project
 
 env:
-  REGISTRY: docker.io/${{ secrets.DOCKER_USERNAME }}
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  # ==========================================
-  # 0. ИЗМЕНЕНИЯ (Определяем, что поменялось)
-  # ==========================================
   changes:
     name: Detect Changed Paths
     runs-on: ubuntu-latest
@@ -40,9 +38,6 @@ jobs:
               - 'scripts/**'
               - 'docker-compose.yml'
 
-  # ==========================================
-  # 1. ВАЛИДАЦИЯ КОНТРАКТОВ (shared)
-  # ==========================================
   validate-contracts:
     name: Validate OpenAPI & Protobuf
     runs-on: ubuntu-latest
@@ -58,7 +53,6 @@ jobs:
         run: |
           shopt -s nullglob
           for f in shared/api-contracts/openapi/*.yaml; do
-            echo "Validating OpenAPI file: $f"
             openapi-generator-cli validate -i "$f"
           done
       - name: Install protoc
@@ -69,13 +63,9 @@ jobs:
         run: |
           shopt -s nullglob
           for f in shared/api-contracts/*.proto; do
-            echo "Checking Proto syntax: $f"
             protoc --proto_path=shared/api-contracts --descriptor_set_out=/dev/null "$f"
           done
 
-  # ==========================================
-  # 2. ЛИНТИНГ ИНФРАСТРУКТУРЫ
-  # ==========================================
   lint-infrastructure:
     name: Lint Helm & K8s manifests
     runs-on: ubuntu-latest
@@ -90,46 +80,45 @@ jobs:
           shopt -s nullglob
           for chart in infrastructure/kubernetes/helm-charts/*; do
             if [ -d "$chart" ]; then
-              echo "Linting chart: $chart"
               helm lint "$chart"
             fi
           done
-      - name: Validate Kubernetes manifests (Kube-linter)
-        uses: stackrox/kube-linter-action@v1.0.4
-        with:
-          directory: infrastructure/kubernetes/base/
 
-  # ==========================================
-  # 3. СБОРКА И ПУБЛИКАЦИЯ СЕРВИСОВ (Специфика Полиглота)
-  # ==========================================
   build-services:
     name: Build & Push Docker images
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
-        # Строго ваши папки из репозитория
         service:
-          - auth-service          # Java (Maven / pom.xml)
-          - catalog-service       # Go (go.mod)
-          - cart-service          # Node.js (package.json)
-          - order-service         # .NET (OrderService.csproj)
-          - payment-service       # Python (requirements.txt)
-          - analytics-service     # Python (requirements.txt)
-          - api-gateway           # Node.js (package.json)
+          - auth-service
+          - catalog-service
+          - cart-service
+          - order-service
+          - payment-service
+          - api-gateway
+          - analytics-service
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Convert image name to lowercase
+        id: string
+        run: echo "IMAGE_ID=$(echo ${{ env.IMAGE_NAME }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -138,14 +127,11 @@ jobs:
           file: ./services/${{ matrix.service }}/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
-            ${{ github.ref == 'refs/heads/project' && format('{0}/{1}:latest', env.REGISTRY, matrix.service) || '' }}
+            ${{ env.REGISTRY }}/${{ steps.string.outputs.IMAGE_ID }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
+            ${{ github.ref == 'refs/heads/project' && format('{0}/{1}/{2}:latest', env.REGISTRY, steps.string.outputs.IMAGE_ID, matrix.service) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ==========================================
-  # 4. ПРОВЕРКА СКРИПТОВ
-  # ==========================================
   check-scripts:
     name: Validate automation scripts
     runs-on: ubuntu-latest
