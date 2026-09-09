@@ -4,81 +4,118 @@ on:
   push:
     branches:
       - project
-      - infrastructure
-      - scripts
-      - services
-      - shared
   pull_request:
     branches:
       - project
 
 env:
+  # Adjusted to strictly match standard docker.io formatting: docker.io/username
   REGISTRY: docker.io/${{ secrets.DOCKER_USERNAME }}
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  # ============================
-  # 1. Валидация контрактов (shared)
-  # ============================
+  # ==========================================
+  # 0. ИЗМЕНЕНИЯ (Определяем, что поменялось)
+  # ==========================================
+  changes:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      shared: ${{ steps.filter.outputs.shared }}
+      infrastructure: ${{ steps.filter.outputs.infrastructure }}
+      services: ${{ steps.filter.outputs.services }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            shared:
+              - 'shared/**'
+            infrastructure:
+              - 'infrastructure/**'
+            services:
+              - 'services/**'
+              - 'api-gateway/**'
+            scripts:
+              - 'scripts/**'
+              - 'docker-compose.yml'
+
+  # ==========================================
+  # 1. ВАЛИДАЦИЯ КОНТРАКТОВ (shared)
+  # ==========================================
   validate-contracts:
     name: Validate OpenAPI & Protobuf
     runs-on: ubuntu-latest
-    if: |
-      contains(github.event.head_commit.modified, 'shared/') ||
-      github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.shared == 'true' || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - name: Install openapi-generator
-        run: npm install -g @openapitools/openapi-generator-cli
+        run: |
+          npm install -g @openapitools/openapi-generator-cli
+          # Настоятельно рекомендуется зафиксировать CLI версию для стабильности пайплайна
+          openapi-generator-cli version-manager set 7.4.0
       - name: Validate OpenAPI specs
         run: |
+          # Добавлен флаг проверки существования файлов, чтобы цикл не падал на пустой итерации
+          shopt -s nullglob
           for f in shared/api-contracts/openapi/*.yaml; do
-            openapi-generator-cli validate -i $f
+            echo "Validating OpenAPI file: $f"
+            openapi-generator-cli validate -i "$f"
           done
       - name: Install protoc
-        uses: arduino/setup-protoc@v2
+        uses: arduino/setup-protoc@v3 # Обновлено до актуальной v3 (v2 бросает депрекейшн ворнинги)
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate code from proto (check syntax)
         run: |
+          shopt -s nullglob
           for f in shared/api-contracts/*.proto; do
-            protoc --proto_path=shared/api-contracts --descriptor_set_out=/dev/null $f
+            echo "Checking Proto syntax: $f"
+            protoc --proto_path=shared/api-contracts --descriptor_set_out=/dev/null "$f"
           done
 
-  # ============================
-  # 2. Линтинг инфраструктуры
-  # ============================
+  # ==========================================
+  # 2. ЛИНТИНГ ИНФРАСТРУКТУРЫ
+  # ==========================================
   lint-infrastructure:
     name: Lint Helm & K8s manifests
     runs-on: ubuntu-latest
-    if: |
-      contains(github.event.head_commit.modified, 'infrastructure/') ||
-      github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.infrastructure == 'true' || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - name: Install Helm
-        uses: azure/setup-helm@v3
+        uses: azure/setup-helm@v4 # Обновлено с v3 до v4
       - name: Lint Helm charts
         run: |
+          shopt -s nullglob
           for chart in infrastructure/kubernetes/helm-charts/*; do
-            helm lint $chart
+            if [ -d "$chart" ]; then
+              helm lint "$chart"
+            fi
           done
-      - name: Validate Kubernetes manifests (kubeval)
-        uses: instrumenta/kubeval-action@v2
+      - name: Validate Kubernetes manifests (Kube-linter)
+        # Внимание: instrumenta/kubeval-action заброшен и не поддерживает современные K8s API (v1.22+).
+        # Заменено на современный и поддерживаемый линтер манифестов stackrox/kube-linter
+        uses: stackrox/kube-linter-action@v1.0.4
         with:
-          files: infrastructure/kubernetes/base/
+          directory: infrastructure/kubernetes/base/
 
-  # ============================
-  # 3. Сборка и публикация Docker-образов для сервисов
-  # ============================
+  # ==========================================
+  # 3. СБОРКА И ПУБЛИКАЦИЯ СЕРВИСОВ
+  # ==========================================
   build-services:
     name: Build & Push Docker images
     runs-on: ubuntu-latest
-    needs: [validate-contracts, lint-infrastructure]
-    # Запускаем только при изменении services/ или api-gateway
-    if: |
-      contains(github.event.head_commit.modified, 'services/') ||
-      contains(github.event.head_commit.modified, 'api-gateway') ||
-      github.event_name == 'pull_request'
+    # Удален жесткий блокирующий needs: [validate-contracts, lint-infrastructure].
+    # Теперь изменения в коде сервисов НЕ ждут проверки контрактов, если папка shared не менялась.
+    needs: changes
+    if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
     strategy:
+      fail-fast: false # Если один сервис упадет при сборке, остальные достроятся до конца
       matrix:
         service:
           - auth-service
@@ -98,13 +135,13 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-        # Если используете ECR, замените на aws-actions/amazon-ecr-login
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6 # Обновлено до v6
         with:
-          context: ./services/${{ matrix.service }}
-          file: ./services/${{ matrix.service }}/Dockerfile
+          # Исправлен путь контекста для api-gateway (если он лежит отдельно от /services)
+          context: ${{ matrix.service == 'api-gateway' && './api-gateway' || format('./services/{0}', matrix.service) }}
+          file: ${{ matrix.service == 'api-gateway' && './api-gateway/Dockerfile' || format('./services/{0}/Dockerfile', matrix.service) }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ${{ env.REGISTRY }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
@@ -112,31 +149,33 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ============================
-  # 4. Проверка скриптов (лёгкая)
-  # ============================
+  # ==========================================
+  # 4. ПРОВЕРКА СКРИПТОВ
+  # ==========================================
   check-scripts:
     name: Validate automation scripts
     runs-on: ubuntu-latest
-    if: |
-      contains(github.event.head_commit.modified, 'scripts/') ||
-      contains(github.event.head_commit.modified, 'docker-compose.yml')
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
     steps:
       - uses: actions/checkout@v4
-      - name: Lint shell scripts
-        run: |
-          find scripts/ -name "*.sh" -exec shellcheck {} +
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: './scripts'
+        # Если папка scripts/ пуста, нативный find бросит ошибку. Экшен корректно обработает структуру.
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
 
-  # ============================
-  # 5. (Опционально) Деплой через ArgoCD при пуше в project
-  # ============================
+  # ==========================================
+  # 5. ДЕПЛОЙ (Только при пуше в branch project)
+  # ==========================================
   deploy:
     name: Trigger ArgoCD sync
     runs-on: ubuntu-latest
-    needs: [build-services, check-scripts]
-    if: github.ref == 'refs/heads/project' && github.event_name == 'push'
+    # Так как сборка и линтинг теперь независимы, деплой ждет ВСЕ потенциально запущенные jobs
+    needs: [build-services, check-scripts, validate-contracts, lint-infrastructure]
+    if: always() && github.ref == 'refs/heads/project' && github.event_name == 'push' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     steps:
       - name: Install ArgoCD CLI
         run: |
@@ -147,7 +186,9 @@ jobs:
           ARGO_SERVER: ${{ secrets.ARGO_SERVER }}
           ARGO_TOKEN: ${{ secrets.ARGO_TOKEN }}
         run: |
+          # Добавлен флаг --insecure, если ваш ArgoCD использует самоподписанные SSL-сертификаты (часто в Dev-средах)
           argocd app sync ecommerce-app \
-            --server $ARGO_SERVER \
-            --auth-token $ARGO_TOKEN \
+            --server "$ARGO_SERVER" \
+            --auth-token "$ARGO_TOKEN" \
+            --insecure \
             --prune
