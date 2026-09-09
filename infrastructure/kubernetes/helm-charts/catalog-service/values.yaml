@@ -1,13 +1,20 @@
-replicaCount: 2
+replicaCount: 1
 image:
   repository: myregistry/catalog-service
   tag: latest
   pullPolicy: IfNotPresent
-db:
-  host: postgres-catalog
-  user: catalog_user
-  password: catalog_pass
-  name: catalog_db
+service:
+  type: ClusterIP
+  port: 8082
+env:
+  - name: CATALOG_DB_HOST
+    value: "postgres-catalog"
+  - name: CATALOG_DB_USER
+    value: "catalog_user"
+  - name: CATALOG_DB_PASSWORD
+    value: "catalog_pass"
+  - name: CATALOG_DB_NAME
+    value: "catalog_db"
 resources:
   requests:
     cpu: 100m

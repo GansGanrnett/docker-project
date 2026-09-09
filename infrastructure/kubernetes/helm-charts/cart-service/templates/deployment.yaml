@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: catalog-service
+  name: cart-service
   labels:
-    app: catalog-service
+    app: cart-service
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: catalog-service
+      app: cart-service
   template:
     metadata:
       labels:
-        app: catalog-service
+        app: cart-service
     spec:
       containers:
         - name: {{ .Chart.Name }}
