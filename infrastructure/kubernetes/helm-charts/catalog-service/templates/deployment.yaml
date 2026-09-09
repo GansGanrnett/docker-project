@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "catalog-service.fullname" . }}
+  labels: {{- include "catalog-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "catalog-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "catalog-service.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8082
+              protocol: TCP
+          env:
+            - name: CATALOG_DB_HOST
+              value: {{ .Values.db.host }}
+            - name: CATALOG_DB_USER
+              value: {{ .Values.db.user }}
+            - name: CATALOG_DB_PASSWORD
+              value: {{ .Values.db.password }}
+            - name: CATALOG_DB_NAME
+              value: {{ .Values.db.name }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5

@@ -1,0 +1,46 @@
+openapi: 3.0.0
+info:
+  title: Catalog Service API
+  version: 1.0.0
+paths:
+  /products:
+    get:
+      summary: Get all products
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+    post:
+      summary: Create product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductInput'
+      responses:
+        '201':
+          description: Created
+components:
+  schemas:
+    Product:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        price: { type: number }
+        quantity: { type: integer }
+    ProductInput:
+      type: object
+      required: [name, price]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        price: { type: number }
+        quantity: { type: integer }
