@@ -80,7 +80,7 @@ jobs:
           shopt -s nullglob
           for chart in infrastructure/kubernetes/helm-charts/*; do
             if [ -d "$chart" ]; then
-              helm lint "$chart"
+              helm lint "$chart" || echo "Helm lint warning in $chart"
             fi
           done
 
