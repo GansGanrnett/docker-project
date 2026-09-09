@@ -1,0 +1,17 @@
+replicaCount: 2
+image:
+  repository: myregistry/catalog-service
+  tag: latest
+  pullPolicy: IfNotPresent
+db:
+  host: postgres-catalog
+  user: catalog_user
+  password: catalog_pass
+  name: catalog_db
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
