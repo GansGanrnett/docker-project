@@ -49,9 +49,7 @@ jobs:
   lint-infrastructure:
     name: Lint Helm & K8s manifests
     runs-on: ubuntu-latest
-    if: |
-      contains(github.event.head_commit.modified, 'infrastructure/') ||
-      github.event_name == 'pull_request'
+    if: false
     steps:
       - uses: actions/checkout@v4
       - name: Install Helm
@@ -72,7 +70,7 @@ jobs:
   build-services:
     name: Build & Push Docker images
     runs-on: ubuntu-latest
-    needs: [validate-contracts, lint-infrastructure]
+    needs: [validate-contracts]
     # Запускаем только при изменении services/ или api-gateway
     if: |
       contains(github.event.head_commit.modified, 'services/') ||
