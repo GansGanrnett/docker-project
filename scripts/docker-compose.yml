@@ -1,0 +1,67 @@
+version: '3.8'
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  postgres_auth_data:
+  postgres_catalog_data:
+  mongo_order_data:
+  redis_cart_data:
+
+services:
+  # 1. БД для Auth Service (PostgreSQL)
+  auth-db:
+    image: postgres:15-alpine
+    container_name: auth-postgres
+    environment:
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_password_secure
+      POSTGRES_DB: auth_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
+
+  # 2. БД для Catalog Service (PostgreSQL)
+  catalog-db:
+    image: postgres:15-alpine
+    container_name: catalog-postgres
+    environment:
+      POSTGRES_USER: catalog_user
+      POSTGRES_PASSWORD: catalog_password_secure
+      POSTGRES_DB: catalog_db
+    ports:
+      - "5433:5432" # Проброшен на порт 5433, чтобы не было конфликта с auth-db
+    volumes:
+      - postgres_catalog_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
+
+  # 3. БД для Order Service (MongoDB)
+  order-db:
+    image: mongo:6.0
+    container_name: order-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin_password_secure
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_order_data:/data/db
+    networks:
+      - ecommerce-network
+
+  # 4. Кэш для Cart Service (Redis)
+  cart-cache:
+    image: redis:7.0-alpine
+    container_name: cart-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_cart_data:/data
+    networks:
+      - ecommerce-network

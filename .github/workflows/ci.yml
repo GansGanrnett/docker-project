@@ -1,0 +1,147 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - project
+  pull_request:
+    branches:
+      - project
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  changes:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      shared: ${{ steps.filter.outputs.shared }}
+      infrastructure: ${{ steps.filter.outputs.infrastructure }}
+      services: ${{ steps.filter.outputs.services }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            shared:
+              - 'shared/**'
+            infrastructure:
+              - 'infrastructure/**'
+            services:
+              - 'services/**'
+            scripts:
+              - 'scripts/**'
+              - 'docker-compose.yml'
+
+  validate-contracts:
+    name: Validate OpenAPI & Protobuf
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.shared == 'true' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install openapi-generator
+        run: |
+          npm install -g @openapitools/openapi-generator-cli
+          openapi-generator-cli version-manager set 7.4.0
+      - name: Validate OpenAPI specs
+        run: |
+          shopt -s nullglob
+          for f in shared/api-contracts/openapi/*.yaml; do
+            openapi-generator-cli validate -i "$f"
+          done
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check Proto syntax
+        run: |
+          shopt -s nullglob
+          for f in shared/api-contracts/*.proto; do
+            protoc --proto_path=shared/api-contracts --descriptor_set_out=/dev/null "$f"
+          done
+
+  lint-infrastructure:
+    name: Lint Helm & K8s manifests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.infrastructure == 'true' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+      - name: Lint Helm charts
+        run: |
+          shopt -s nullglob
+          for chart in infrastructure/kubernetes/helm-charts/*; do
+            if [ -d "$chart" ]; then
+              helm lint "$chart" || echo "Helm lint warning in $chart"
+            fi
+          done
+
+  build-services:
+    name: Build & Push Docker images
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - auth-service
+          - catalog-service
+          - cart-service
+          - order-service
+          - payment-service
+          - api-gateway
+          - analytics-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Convert image name to lowercase
+        id: string
+        run: echo "IMAGE_ID=$(echo ${{ env.IMAGE_NAME }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/${{ matrix.service }}
+          file: ./services/${{ matrix.service }}/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.string.outputs.IMAGE_ID }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
+            ${{ github.ref == 'refs/heads/project' && format('{0}/{1}/{2}:latest', env.REGISTRY, steps.string.outputs.IMAGE_ID, matrix.service) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  check-scripts:
+    name: Validate automation scripts
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: './scripts'
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
