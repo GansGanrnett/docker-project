@@ -1,74 +1,55 @@
-require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const verifyToken = require('./authMiddleware');
+require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Включаем CORS для всех запросов (для разработки)
-app.use(cors());
-
-// Простой health-check для Gateway
-app.get('/health', (req, res) => {
-  res.send('API Gateway OK');
+app.use((req, res, next) => {
+    console.log(`[API-GATEWAY] ${req.method} ${req.url}`);
+    next();
 });
 
-// Прокси для Auth Service
-app.use(
-  '/auth',
-  createProxyMiddleware({
-    target: process.env.AUTH_SERVICE_URL || 'http://localhost:8081',
-    changeOrigin: true,
-    pathRewrite: { '^/auth': '' }, // убираем префикс /auth при проксировании
-  })
-);
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'UP', service: 'api-gateway' });
+});
 
-// Прокси для Catalog Service
-app.use(
-  '/catalog',
-  createProxyMiddleware({
-    target: process.env.CATALOG_SERVICE_URL || 'http://localhost:8082',
+app.use('/api/v1/auth', createProxyMiddleware({
+    target: process.env.AUTH_SERVICE_URL || 'http://auth-service:8081',
     changeOrigin: true,
-    pathRewrite: { '^/catalog': '' },
-  })
-);
+    pathRewrite: { '^/api/v1/auth': '' },
+}));
 
-// Прокси для Cart Service
-app.use(
-  '/cart',
-  createProxyMiddleware({
-    target: process.env.CART_SERVICE_URL || 'http://localhost:8083',
+app.use('/api/v1/catalog', createProxyMiddleware({
+    target: process.env.CATALOG_SERVICE_URL || 'http://catalog-service:8082',
     changeOrigin: true,
-    pathRewrite: { '^/cart': '' },
-  })
-);
+    pathRewrite: { '^/api/v1/catalog': '' },
+}));
 
-// Прокси для Order Service
-app.use(
-  '/order',
-  createProxyMiddleware({
-    target: process.env.ORDER_SERVICE_URL || 'http://localhost:8084',
+app.use('/api/v1/cart', verifyToken, createProxyMiddleware({
+    target: process.env.CART_SERVICE_URL || 'http://cart-service:8083',
     changeOrigin: true,
-    pathRewrite: { '^/order': '' },
-  })
-);
+    pathRewrite: { '^/api/v1/cart': '' },
+}));
 
-// Прокси для Payment Service
-app.use(
-  '/payment',
-  createProxyMiddleware({
-    target: process.env.PAYMENT_SERVICE_URL || 'http://localhost:8085',
-    changeOrigin: true,
-    pathRewrite: { '^/payment': '' },
-  })
-);
+// FIXED: Using an explicit conditional middleware layer to ensure Express skips route prefix trimming
+app.use((req, res, next) => {
+    if (req.url.startsWith('/api/v1/orders')) {
+        return verifyToken(req, res, () => {
+            createProxyMiddleware({
+                target: process.env.ORDER_SERVICE_URL || 'http://order-service:8084',
+                changeOrigin: true,
+            })(req, res, next);
+        });
+    }
+    next();
+});
 
-// Если маршрут не найден – 404
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+    res.status(404).json({ error: 'Route not found on API Gateway' });
 });
 
 app.listen(PORT, () => {
-  console.log(`API Gateway running on port ${PORT}`);
+    console.log(`=== API Gateway successfully started on port ${PORT} ===`);
 });
