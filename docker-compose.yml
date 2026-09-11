@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 version: '3.8'
 
 networks:
@@ -11,6 +10,8 @@ volumes:
   mongo_order_data:
   redis_data:
   rabbitmq_data:
+  grafana_data:
+  loki_data:
 
 services:
   auth-db:
@@ -21,35 +22,17 @@ services:
       POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD}
       POSTGRES_DB: ${AUTH_DB_NAME}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_auth_data:/var/lib/postgresql/data
     networks:
       - ecommerce-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AUTH_DB_USER} -d ${AUTH_DB_NAME}"]
-=======
-services:
-  # ========== БАЗЫ ДАННЫХ ==========
-  postgres-auth:
-    image: postgres:15-alpine
-    container_name: postgres-auth
-    environment:
-      POSTGRES_USER: auth_user
-      POSTGRES_PASSWORD: auth_pass
-      POSTGRES_DB: auth_db
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-auth-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U auth_user"]
->>>>>>> 59cebc6 (Fixed services 2  + REST 09.09.26)
+      test: ["CMD-SHELL", "pg_isready -U $${AUTH_DB_USER} -d $${AUTH_DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-<<<<<<< HEAD
   catalog-db:
     image: postgres:15-alpine
     container_name: catalog-postgres
@@ -58,61 +41,29 @@ services:
       POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD}
       POSTGRES_DB: ${CATALOG_DB_NAME}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_catalog_data:/var/lib/postgresql/data
     networks:
       - ecommerce-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${CATALOG_DB_USER} -d ${CATALOG_DB_NAME}"]
-=======
-  postgres-catalog:
-    image: postgres:15-alpine
-    container_name: postgres-catalog
-    environment:
-      POSTGRES_USER: catalog_user
-      POSTGRES_PASSWORD: catalog_pass
-      POSTGRES_DB: catalog_db
-    ports:
-      - "5434:5432"
-    volumes:
-      - postgres-catalog-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U catalog_user"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  postgres-order:
-    image: postgres:15-alpine
-    container_name: postgres-order
-    environment:
-      POSTGRES_USER: order_user
-      POSTGRES_PASSWORD: order_pass
-      POSTGRES_DB: order_db
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres-order-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U order_user"]
->>>>>>> 59cebc6 (Fixed services 2  + REST 09.09.26)
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-<<<<<<< HEAD
   cart-cache:
     image: redis:7.0-alpine
     container_name: cart-redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     networks:
       - ecommerce-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a ${REDIS_PASSWORD} ping | grep PONG"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -124,9 +75,14 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongo_order_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - ecommerce-network
 
@@ -134,8 +90,8 @@ services:
     image: rabbitmq:3.12-management-alpine
     container_name: message-rabbitmq
     ports:
-      - "5672:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT}:15672"
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
@@ -145,63 +101,25 @@ services:
       - ecommerce-network
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_running"]
-=======
-  postgres-payment:
-    image: postgres:15-alpine
-    container_name: postgres-payment
-    environment:
-      POSTGRES_USER: payment_user
-      POSTGRES_PASSWORD: ***REMOVED***
-      POSTGRES_DB: payment_db
-    ports:
-      - "5435:5432"
-    volumes:
-      - postgres-payment-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U payment_user"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  redis-cart:
-    image: redis:7-alpine
-    container_name: redis-cart
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-cart-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  mongodb-analytics:
-    image: mongo:6
-    container_name: mongodb-analytics
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo-analytics-data:/data/db
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
->>>>>>> 59cebc6 (Fixed services 2  + REST 09.09.26)
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-<<<<<<< HEAD
   auth-service:
     build:
       context: ./services/auth-service
       dockerfile: Dockerfile
     container_name: auth-service
     ports:
-      - "${AUTH_SERVICE_PORT}:8081"
+      - "127.0.0.1:${AUTH_SERVICE_PORT}:8081"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://auth-db:5432/${AUTH_DB_NAME}
       SPRING_DATASOURCE_USERNAME: ${AUTH_DB_USER}
       SPRING_DATASOURCE_PASSWORD: ${AUTH_DB_PASSWORD}
+      AUTH_ADMIN_USER: ${AUTH_ADMIN_USER:-admin}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD}
+    volumes:
+      - ./services/auth-service/configs:/app/configs:ro
     networks:
       - ecommerce-network
     depends_on:
@@ -214,7 +132,7 @@ services:
       dockerfile: Dockerfile
     container_name: catalog-service
     ports:
-      - "${CATALOG_SERVICE_PORT}:8082"
+      - "127.0.0.1:${CATALOG_SERVICE_PORT}:8082"
     networks:
       - ecommerce-network
     depends_on:
@@ -227,10 +145,10 @@ services:
       dockerfile: Dockerfile
     container_name: cart-service
     ports:
-      - "${CART_SERVICE_PORT}:8083"
+      - "127.0.0.1:${CART_SERVICE_PORT}:8083"
     environment:
       PORT: 8083
-      REDIS_URL: redis://cart-cache:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD}@cart-cache:6379
     networks:
       - ecommerce-network
     depends_on:
@@ -243,14 +161,18 @@ services:
       dockerfile: Dockerfile
     container_name: order-service
     ports:
-      - "${ORDER_SERVICE_PORT}:8084"
+      - "127.0.0.1:${ORDER_SERVICE_PORT}:8084"
     environment:
       MONGO_URL: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@order-mongodb:27017/?authSource=admin
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      JWT_PUBLIC_KEY_PATH: /app/configs/public.pem
+      CATALOG_SERVICE_URL: http://catalog-service:8082
+    volumes:
+      - ./services/api-gateway/configs/public.pem:/app/configs/public.pem:ro
     networks:
       - ecommerce-network
     depends_on:
-      auth-db:
+      order-db:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
@@ -261,7 +183,7 @@ services:
       dockerfile: Dockerfile
     container_name: payment-service
     ports:
-      - "${PAYMENT_SERVICE_PORT}:8085"
+      - "127.0.0.1:${PAYMENT_SERVICE_PORT}:8085"
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
     networks:
@@ -276,7 +198,7 @@ services:
       dockerfile: Dockerfile
     container_name: analytics-fastapi
     ports:
-      - "8086:8000"
+      - "127.0.0.1:8086:8000"
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
     networks:
@@ -294,91 +216,16 @@ services:
       - "${GATEWAY_PORT}:8080"
     environment:
       PORT: 8080
-=======
-  # ========== МИКРОСЕРВИСЫ ==========
-  auth-service:
-    build: ./services/auth-service
-    container_name: auth-service
-    ports:
-      - "8081:8081"
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-auth:5432/auth_db
-      SPRING_DATASOURCE_USERNAME: auth_user
-      SPRING_DATASOURCE_PASSWORD: auth_pass
-    depends_on:
-      postgres-auth:
-        condition: service_healthy
-
-  catalog-service:
-    build: ./services/catalog-service
-    container_name: catalog-service
-    ports:
-      - "8082:8082"
-    environment:
-      CATALOG_DB_HOST: postgres-catalog
-      CATALOG_DB_USER: catalog_user
-      CATALOG_DB_PASSWORD: catalog_pass
-      CATALOG_DB_NAME: catalog_db
-    depends_on:
-      postgres-catalog:
-        condition: service_healthy
-
-  cart-service:
-    build: ./services/cart-service
-    container_name: cart-service
-    ports:
-      - "8083:8083"
-    environment:
-      REDIS_HOST: redis-cart
-      REDIS_PORT: 6379
-    depends_on:
-      redis-cart:
-        condition: service_healthy
-
-  order-service:
-    build: ./services/order-service
-    container_name: order-service
-    ports:
-      - "8084:8084"
-    environment:
-      - ASPNETCORE_URLS=http://+:8084
-      - ConnectionStrings__DefaultConnection=Host=postgres-order;Database=order_db;Username=order_user;Password=order_pass
-    depends_on:
-      postgres-order:
-        condition: service_healthy
-
-  payment-service:
-    build: ./services/payment-service
-    container_name: payment-service
-    ports:
-      - "8085:8085"
-    environment:
-      DATABASE_URL: postgresql://payment_user:***REMOVED***@postgres-payment:5432/payment_db
-    depends_on:
-      postgres-payment:
-        condition: service_healthy
-
-  api-gateway:
-    build: ./services/api-gateway
-    container_name: api-gateway
-    ports:
-      - "8080:8080"
-    environment:
->>>>>>> 59cebc6 (Fixed services 2  + REST 09.09.26)
       AUTH_SERVICE_URL: http://auth-service:8081
       CATALOG_SERVICE_URL: http://catalog-service:8082
       CART_SERVICE_URL: http://cart-service:8083
       ORDER_SERVICE_URL: http://order-service:8084
-<<<<<<< HEAD
       ANALYTICS_SERVICE_URL: http://analytics-service:8000
       PAYMENT_SERVICE_URL: http://payment-service:8085
     volumes:
-      - ./services/api-gateway/configs:/app/configs
+      - ./services/api-gateway/configs:/app/configs:ro
     networks:
       - ecommerce-network
-=======
-      PAYMENT_SERVICE_URL: http://payment-service:8085
->>>>>>> 59cebc6 (Fixed services 2  + REST 09.09.26)
     depends_on:
       - auth-service
       - catalog-service
@@ -386,7 +233,6 @@ services:
       - order-service
       - payment-service
 
-<<<<<<< HEAD
   prometheus:
     image: prom/prometheus:v2.45.0
     container_name: metrics-prometheus
@@ -403,10 +249,12 @@ services:
     image: grafana/grafana:10.0.0
     container_name: dashboard-grafana
     ports:
-      - "${GRAFANA_PORT}:3000"
+      - "127.0.0.1:${GRAFANA_PORT}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
     networks:
       - ecommerce-network
     depends_on:
@@ -416,8 +264,10 @@ services:
     image: grafana/loki:2.9.0
     container_name: logs-loki
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
     networks:
       - ecommerce-network
 
@@ -425,21 +275,11 @@ services:
     image: grafana/promtail:2.9.0
     container_name: logs-promtail
     volumes:
-      - /var/log:/var/log
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./infrastructure/monitoring/loki/promtail-config.yml:/etc/promtail/config.yml
     command: -config.file=/etc/promtail/config.yml
     networks:
       - ecommerce-network
     depends_on:
       - loki
-=======
-volumes:
-  postgres-auth-data:
-  postgres-catalog-data:
-  postgres-order-data:
-  postgres-payment-data:
-  redis-cart-data:
-  mongo-analytics-data:
->>>>>>> 59cebc6 (Fixed services 2  + REST 09.09.26)
