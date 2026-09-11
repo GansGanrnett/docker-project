@@ -1,5 +1,17 @@
-FROM alpine:3.19
-RUN apk add --no-cache curl
-RUN echo "cart-service is successfully built via GitHub Actions" > /app_status.txt
-CMD ["cat", "/app_status.txt"]
-# Trigger CI Build v1
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+USER node
+COPY --chown=node:node --from=builder /app/node_modules ./node_modules
+COPY --chown=node:node --from=builder /app/src ./src
+COPY --chown=node:node --from=builder /app/package*.json ./
+
+EXPOSE 8083
+CMD ["node", "src/index.js"]

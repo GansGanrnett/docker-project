@@ -1,184 +1,149 @@
+version: '3.8'
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  postgres_auth_data:
+  postgres_catalog_data:
+  mongo_order_data:
+  redis_data:
+
 services:
-  # ========== БАЗЫ ДАННЫХ ==========
-  postgres-auth:
+  # ==========================================
+  # 1. ИНФРАСТРУКТУРНЫЙ СЛОЙ (БАЗЫ ДАННЫХ)
+  # ==========================================
+  auth-db:
     image: postgres:15-alpine
-    container_name: postgres-auth
+    container_name: auth-postgres
     environment:
       POSTGRES_USER: auth_user
-      POSTGRES_PASSWORD: auth_pass
+      POSTGRES_PASSWORD: auth_password_secure
       POSTGRES_DB: auth_db
     ports:
       - "5432:5432"
     volumes:
-      - postgres-auth-data:/var/lib/postgresql/data
+      - postgres_auth_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U auth_user"]
+      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  postgres-catalog:
+  catalog-db:
     image: postgres:15-alpine
-    container_name: postgres-catalog
+    container_name: catalog-postgres
     environment:
       POSTGRES_USER: catalog_user
-      POSTGRES_PASSWORD: catalog_pass
+      POSTGRES_PASSWORD: catalog_password_secure
       POSTGRES_DB: catalog_db
-    ports:
-      - "5434:5432"
-    volumes:
-      - postgres-catalog-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U catalog_user"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  postgres-order:
-    image: postgres:15-alpine
-    container_name: postgres-order
-    environment:
-      POSTGRES_USER: order_user
-      POSTGRES_PASSWORD: order_pass
-      POSTGRES_DB: order_db
     ports:
       - "5433:5432"
     volumes:
-      - postgres-order-data:/var/lib/postgresql/data
+      - postgres_catalog_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U order_user"]
+      test: ["CMD-SHELL", "pg_isready -U catalog_user -d catalog_db"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  postgres-payment:
-    image: postgres:15-alpine
-    container_name: postgres-payment
-    environment:
-      POSTGRES_USER: payment_user
-      POSTGRES_PASSWORD: payment_pass
-      POSTGRES_DB: payment_db
-    ports:
-      - "5435:5432"
-    volumes:
-      - postgres-payment-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U payment_user"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis-cart:
-    image: redis:7-alpine
-    container_name: redis-cart
+  cart-cache:
+    image: redis:7.0-alpine
+    container_name: cart-redis
     ports:
       - "6379:6379"
     volumes:
-      - redis-cart-data:/data
+      - redis_data:/data
+    networks:
+      - ecommerce-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  mongodb-analytics:
-    image: mongo:6
-    container_name: mongodb-analytics
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo-analytics-data:/data/db
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # ========== МИКРОСЕРВИСЫ ==========
+  order-db:
+    image: mongo:6.0
+    container_name: order-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin_password_secure
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_order_data:/data/db
+    networks:
+      - ecommerce-network
+
+  # ==========================================
+  # 2. МИКРОСЕРВИСНЫЙ СЛОЙ (БИЗНЕС-ЛОГИКА)
+  # ==========================================
   auth-service:
-    build: ./services/auth-service
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
     container_name: auth-service
     ports:
       - "8081:8081"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-auth:5432/auth_db
+      SPRING_DATASOURCE_URL: jdbc:postgresql://auth-db:5432/auth_db
       SPRING_DATASOURCE_USERNAME: auth_user
-      SPRING_DATASOURCE_PASSWORD: auth_pass
+      SPRING_DATASOURCE_PASSWORD: auth_password_secure
+    networks:
+      - ecommerce-network
     depends_on:
-      postgres-auth:
+      auth-db:
         condition: service_healthy
 
   catalog-service:
-    build: ./services/catalog-service
+    build:
+      context: ./services/catalog-service
+      dockerfile: Dockerfile
     container_name: catalog-service
     ports:
       - "8082:8082"
-    environment:
-      CATALOG_DB_HOST: postgres-catalog
-      CATALOG_DB_USER: catalog_user
-      CATALOG_DB_PASSWORD: catalog_pass
-      CATALOG_DB_NAME: catalog_db
+    networks:
+      - ecommerce-network
     depends_on:
-      postgres-catalog:
+      catalog-db:
         condition: service_healthy
 
   cart-service:
-    build: ./services/cart-service
+    build:
+      context: ./services/cart-service
+      dockerfile: Dockerfile
     container_name: cart-service
     ports:
       - "8083:8083"
     environment:
-      REDIS_HOST: redis-cart
-      REDIS_PORT: 6379
+      PORT: 8083
+      REDIS_URL: redis://cart-cache:6379
+    networks:
+      - ecommerce-network
     depends_on:
-      redis-cart:
-        condition: service_healthy
-
-  order-service:
-    build: ./services/order-service
-    container_name: order-service
-    ports:
-      - "8084:8084"
-    environment:
-      - ASPNETCORE_URLS=http://+:8084
-      - ConnectionStrings__DefaultConnection=Host=postgres-order;Database=order_db;Username=order_user;Password=order_pass
-    depends_on:
-      postgres-order:
-        condition: service_healthy
-
-  payment-service:
-    build: ./services/payment-service
-    container_name: payment-service
-    ports:
-      - "8085:8085"
-    environment:
-      DATABASE_URL: postgresql://payment_user:payment_pass@postgres-payment:5432/payment_db
-    depends_on:
-      postgres-payment:
+      cart-cache:
         condition: service_healthy
 
   api-gateway:
-    build: ./services/api-gateway
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
     container_name: api-gateway
     ports:
       - "8080:8080"
     environment:
+      PORT: 8080
       AUTH_SERVICE_URL: http://auth-service:8081
       CATALOG_SERVICE_URL: http://catalog-service:8082
       CART_SERVICE_URL: http://cart-service:8083
-      ORDER_SERVICE_URL: http://order-service:8084
-      PAYMENT_SERVICE_URL: http://payment-service:8085
+    networks:
+      - ecommerce-network
     depends_on:
       - auth-service
       - catalog-service
       - cart-service
-      - order-service
-      - payment-service
-
-volumes:
-  postgres-auth-data:
-  postgres-catalog-data:
-  postgres-order-data:
-  postgres-payment-data:
-  redis-cart-data:
-  mongo-analytics-data:
