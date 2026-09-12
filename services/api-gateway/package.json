@@ -1,19 +1,16 @@
 {
   "name": "api-gateway",
   "version": "1.0.0",
-  "description": "API Gateway for polyglot microservices",
+  "description": "Центральный входной шлюз с поддержкой метрик Prometheus",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "start": "node src/index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "http-proxy-middleware": "^2.0.6",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "http-proxy-middleware": "^3.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "prom-client": "^15.1.0"
   }
 }
