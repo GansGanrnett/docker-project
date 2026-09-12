@@ -8,14 +8,15 @@ using System.Threading.Tasks;
 namespace OrderService.Controllers
 {
     [ApiController]
-    [Route("api/v1/orders")] // Идеальное совпадение с внешним путем шлюза
+    [Route("api/v1/orders")]
     public class OrdersController : ControllerBase
     {
         private readonly IMongoCollection<Order> _ordersCollection;
 
         public OrdersController()
         {
-            var connectionString = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://admin:admin_password_secure@order-mongodb:27017";
+            // Обновлен пароль на ProdMongoRootPass2026Secure99 без спецсимволов
+            var connectionString = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://admin:ProdMongoRootPass2026Secure99@order-mongodb:27017/?authSource=admin";
             var client = new MongoClient(connectionString);
             var database = client.GetDatabase("order_db");
             _ordersCollection = database.GetCollection<Order>("orders");

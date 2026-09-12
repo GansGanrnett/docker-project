@@ -23,8 +23,8 @@ namespace OrderService.Services
         {
             _logger = logger;
 
-            // Инициализируем подключение к MongoDB
-            var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://admin:admin_password_secure@order-mongodb:27017";
+            // Обновлен пароль на ProdMongoRootPass2026Secure99 без спецсимволов
+            var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://admin:ProdMongoRootPass2026Secure99@order-mongodb:27017/?authSource=admin";
             var client = new MongoClient(mongoUrl);
             var database = client.GetDatabase("order_db");
             _ordersCollection = database.GetCollection<Order>("orders");
@@ -36,13 +36,12 @@ namespace OrderService.Services
         {
             try
             {
-                var rabbitMqUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL") ?? "amqp://admin:admin_rabbit_secure@rabbitmq:5672";
+                var rabbitMqUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL") ?? "amqp://admin:ProdRabbitBrokerPass2026Secure99@rabbitmq:5672";
                 var factory = new ConnectionFactory() { Uri = new Uri(rabbitMqUrl) };
                 
                 _connection = factory.CreateConnection();
                 _channel = _connection.CreateModel();
                 
-                // Декларируем ту же устойчивую очередь, что и в Python
                 _channel.QueueDeclare(queue: "orders.payment_statuses", durable: true, exclusive: false, autoDelete: false, arguments: null);
                 _logger.LogInformation("[RABBITMQ-CONSUMER] Successfully initialized connection and queue.");
             }
@@ -74,7 +73,6 @@ namespace OrderService.Services
 
                     if (!string.IsNullOrEmpty(orderId) && status == "SUCCESS")
                     {
-                        // Обновляем статус заказа в MongoDB с PendingPayment на Paid
                         var filter = Builders<Order>.Filter.Eq(o => o.Id, orderId);
                         var update = Builders<Order>.Update.Set(o => o.Status, "Paid");
                         
@@ -85,7 +83,6 @@ namespace OrderService.Services
                         }
                     }
 
-                    // Подтверждаем брокеру успешную обработку сообщения (Ack)
                     _channel.BasicAck(deliveryTag: ea.DeliveryTag, multiple: false);
                 }
                 catch (Exception ex)
