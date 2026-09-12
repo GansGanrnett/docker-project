@@ -11,9 +11,7 @@ volumes:
   redis_data:
 
 services:
-  # ==========================================
-  # 1. ИНФРАСТРУКТУРНЫЙ СЛОЙ (БАЗЫ ДАННЫХ)
-  # ==========================================
+  # === ИНФРАСТРУКТУРНЫЕ БАЗЫ ДАННЫХ ===
   auth-db:
     image: postgres:15-alpine
     container_name: auth-postgres
@@ -80,9 +78,7 @@ services:
     networks:
       - ecommerce-network
 
-  # ==========================================
-  # 2. МИКРОСЕРВИСНЫЙ СЛОЙ (БИЗНЕС-ЛОГИКА)
-  # ==========================================
+  # === ПОЛИГЛОТНЫЕ МИКРОСЕРВИСЫ ===
   auth-service:
     build:
       context: ./services/auth-service
@@ -129,6 +125,30 @@ services:
       cart-cache:
         condition: service_healthy
 
+  order-service:
+    build:
+      context: ./services/order-service
+      dockerfile: Dockerfile
+    container_name: order-service
+    ports:
+      - "8084:8084"
+    environment:
+      MONGO_URL: mongodb://admin:admin_password_secure@order-mongodb:27017
+    networks:
+      - ecommerce-network
+    depends_on:
+      - order-db
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: payment-service
+    ports:
+      - "8085:8085"
+    networks:
+      - ecommerce-network
+
   api-gateway:
     build:
       context: ./services/api-gateway
@@ -141,9 +161,39 @@ services:
       AUTH_SERVICE_URL: http://auth-service:8081
       CATALOG_SERVICE_URL: http://catalog-service:8082
       CART_SERVICE_URL: http://cart-service:8083
+      ORDER_SERVICE_URL: http://order-service:8084
+      PAYMENT_SERVICE_URL: http://payment-service:8085
     networks:
       - ecommerce-network
     depends_on:
       - auth-service
       - catalog-service
       - cart-service
+      - order-service
+      - payment-service
+
+  # === СЛОЙ НАБЛЮДАЕМОСТИ ===
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: metrics-prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - ecommerce-network
+    depends_on:
+      - api-gateway
+
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: dashboard-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin_monitor_secure
+    networks:
+      - ecommerce-network
+    depends_on:
+      - prometheus

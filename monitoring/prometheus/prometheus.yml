@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8080']
+
+  - job_name: 'auth-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['auth-service:8081']
+
+  - job_name: 'payment-service'
+    static_configs:
+      - targets: ['payment-service:8085']
