@@ -9,18 +9,17 @@ volumes:
   postgres_catalog_data:
   mongo_order_data:
   redis_data:
+  rabbitmq_data:
 
 services:
-  # ==========================================
-  # 1. ИНФРАСТРУКТУРНЫЙ СЛОЙ (БАЗЫ ДАННЫХ)
-  # ==========================================
+  # === ИНФРАСТРУКТУРНЫЕ БАЗЫ ДАННЫХ И БРОКЕРЫ ===
   auth-db:
     image: postgres:15-alpine
     container_name: auth-postgres
     environment:
-      POSTGRES_USER: auth_user
-      POSTGRES_PASSWORD: auth_password_secure
-      POSTGRES_DB: auth_db
+      POSTGRES_USER: ${AUTH_DB_USER}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD}
+      POSTGRES_DB: ${AUTH_DB_NAME}
     ports:
       - "5432:5432"
     volumes:
@@ -28,7 +27,7 @@ services:
     networks:
       - ecommerce-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      test: ["CMD-SHELL", "pg_isready -U $${AUTH_DB_USER} -d $${AUTH_DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -37,9 +36,9 @@ services:
     image: postgres:15-alpine
     container_name: catalog-postgres
     environment:
-      POSTGRES_USER: catalog_user
-      POSTGRES_PASSWORD: catalog_password_secure
-      POSTGRES_DB: catalog_db
+      POSTGRES_USER: ${CATALOG_DB_USER}
+      POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD}
+      POSTGRES_DB: ${CATALOG_DB_NAME}
     ports:
       - "5433:5432"
     volumes:
@@ -47,7 +46,7 @@ services:
     networks:
       - ecommerce-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U catalog_user -d catalog_db"]
+      test: ["CMD-SHELL", "pg_isready -U $${CATALOG_DB_USER} -d $${CATALOG_DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -71,8 +70,8 @@ services:
     image: mongo:6.0
     container_name: order-mongodb
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: admin_password_secure
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
     ports:
       - "27017:27017"
     volumes:
@@ -80,20 +79,37 @@ services:
     networks:
       - ecommerce-network
 
-  # ==========================================
-  # 2. МИКРОСЕРВИСНЫЙ СЛОЙ (БИЗНЕС-ЛОГИКА)
-  # ==========================================
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: message-rabbitmq
+    ports:
+      - "5672:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # === ПОЛИГЛОТНЫЕ МИКРОСЕРВИСЫ ===
   auth-service:
     build:
       context: ./services/auth-service
       dockerfile: Dockerfile
     container_name: auth-service
     ports:
-      - "8081:8081"
+      - "${AUTH_SERVICE_PORT}:8081"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://auth-db:5432/auth_db
-      SPRING_DATASOURCE_USERNAME: auth_user
-      SPRING_DATASOURCE_PASSWORD: auth_password_secure
+      SPRING_DATASOURCE_URL: jdbc:postgresql://auth-db:5432/${AUTH_DB_NAME}
+      SPRING_DATASOURCE_USERNAME: ${AUTH_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${AUTH_DB_PASSWORD}
     networks:
       - ecommerce-network
     depends_on:
@@ -106,7 +122,7 @@ services:
       dockerfile: Dockerfile
     container_name: catalog-service
     ports:
-      - "8082:8082"
+      - "${CATALOG_SERVICE_PORT}:8082"
     networks:
       - ecommerce-network
     depends_on:
@@ -119,7 +135,7 @@ services:
       dockerfile: Dockerfile
     container_name: cart-service
     ports:
-      - "8083:8083"
+      - "${CART_SERVICE_PORT}:8083"
     environment:
       PORT: 8083
       REDIS_URL: redis://cart-cache:6379
@@ -129,21 +145,84 @@ services:
       cart-cache:
         condition: service_healthy
 
+  order-service:
+    build:
+      context: ./services/order-service
+      dockerfile: Dockerfile
+    container_name: order-service
+    ports:
+      - "${ORDER_SERVICE_PORT}:8084"
+    environment:
+      MONGO_URL: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@order-mongodb:27017
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+    networks:
+      - ecommerce-network
+    depends_on:
+      auth-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: payment-service
+    ports:
+      - "${PAYMENT_SERVICE_PORT}:8085"
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+    networks:
+      - ecommerce-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   api-gateway:
     build:
       context: ./services/api-gateway
       dockerfile: Dockerfile
     container_name: api-gateway
     ports:
-      - "8080:8080"
+      - "${GATEWAY_PORT}:8080"
     environment:
       PORT: 8080
       AUTH_SERVICE_URL: http://auth-service:8081
       CATALOG_SERVICE_URL: http://catalog-service:8082
       CART_SERVICE_URL: http://cart-service:8083
+      ORDER_SERVICE_URL: http://order-service:8084
+      PAYMENT_SERVICE_URL: http://payment-service:8085
     networks:
       - ecommerce-network
     depends_on:
       - auth-service
       - catalog-service
       - cart-service
+      - order-service
+      - payment-service
+
+  # === СЛОЙ НАБЛЮДАЕМОСТИ ===
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: metrics-prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "${PROMETHEUS_PORT}:9090"
+    networks:
+      - ecommerce-network
+    depends_on:
+      - api-gateway
+
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: dashboard-grafana
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    networks:
+      - ecommerce-network
+    depends_on:
+      - prometheus

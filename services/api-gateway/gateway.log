@@ -1,0 +1,5 @@
+=== API Gateway successfully started on port 8080 ===
+[API-GATEWAY] GET /health
+[API-GATEWAY] POST /api/v1/auth/login
+[API-GATEWAY] POST /api/v1/auth/login
+[API-GATEWAY] POST /api/v1/auth/login
