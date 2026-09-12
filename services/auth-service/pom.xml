@@ -1,10 +1,12 @@
 <project>
     <modelVersion>4.0.0</modelVersion>
+    
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.2.0</version>
     </parent>
+
     <groupId>com.example</groupId>
     <artifactId>auth-service</artifactId>
     <version>1.0.0</version>
@@ -12,6 +14,7 @@
     <properties>
         <java.version>21</java.version>
     </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -42,6 +45,7 @@
     </dependencies>
     <build>
         <plugins>
+            <!-- ИСПРАВЛЕНО: Тэги переведены в строчный регистр -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
