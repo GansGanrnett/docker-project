@@ -9,9 +9,10 @@ volumes:
   postgres_catalog_data:
   mongo_order_data:
   redis_data:
+  rabbitmq_data:
 
 services:
-  # === ИНФРАСТРУКТУРНЫЕ БАЗЫ ДАННЫХ ===
+  # === ИНФРАСТРУКТУРНЫЕ БАЗЫ ДАННЫХ И БРОКЕРЫ ===
   auth-db:
     image: postgres:15-alpine
     container_name: auth-postgres
@@ -78,6 +79,26 @@ services:
     networks:
       - ecommerce-network
 
+  # Очередь сообщений RabbitMQ (С веб-интерфейсом на порту 15672)
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: message-rabbitmq
+    ports:
+      - "5672:5672"   # Порт для отправки сообщений из кода
+      - "15672:15672" # Внешний веб-интерфейс панели управления
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin_rabbit_secure
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # === ПОЛИГЛОТНЫЕ МИКРОСЕРВИСЫ ===
   auth-service:
     build:
@@ -134,10 +155,14 @@ services:
       - "8084:8084"
     environment:
       MONGO_URL: mongodb://admin:admin_password_secure@order-mongodb:27017
+      RABBITMQ_URL: amqp://admin:admin_rabbit_secure@rabbitmq:5672
     networks:
       - ecommerce-network
     depends_on:
-      - order-db
+      auth-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   payment-service:
     build:
@@ -146,8 +171,13 @@ services:
     container_name: payment-service
     ports:
       - "8085:8085"
+    environment:
+      RABBITMQ_URL: amqp://admin:admin_rabbit_secure@rabbitmq:5672
     networks:
       - ecommerce-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   api-gateway:
     build:
