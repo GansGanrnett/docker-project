@@ -1,0 +1,7 @@
+.git
+.gitignore
+*.log
+gateway.log
+auth.log
+scripts/
+.github/

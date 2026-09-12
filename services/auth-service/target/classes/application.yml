@@ -1,0 +1,22 @@
+server:
+  port: 8081
+
+spring:
+  datasource:
+    # Меняем 5434 на реальный 5432, который выдал docker compose ps
+    url: jdbc:postgresql://localhost:5432/auth_db
+    username: auth_user
+    password: auth_password_secure
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: true
+
+jwt:
+  private-key-path: classpath:configs/private.pem
+  public-key-path: classpath:configs/public.pem
+  issuer: ecommerce-platform
+  expires-in-ms: 3600000
