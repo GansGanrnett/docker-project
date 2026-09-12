@@ -1,9 +1,32 @@
 server:
   port: 8081
+
 spring:
   datasource:
-    url: jdbc:postgresql://postgres-auth:5432/auth_db
-    username: auth_user
-    password: auth_pass
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/auth_db}
+    username: ${SPRING_DATASOURCE_USERNAME:auth_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:auth_password_secure}
   jpa:
-    hibernate.ddl-auto: update
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: 'prometheus,health,info'
+  endpoint:
+    prometheus:
+      enabled: true
+    health:
+      show-details: always
+
+jwt:
+  private-key-path: classpath:configs/private.pem
+  public-key-path: classpath:configs/public.pem
+  issuer: ecommerce-platform
+  expires-in-ms: 3600000
