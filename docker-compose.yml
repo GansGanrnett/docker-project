@@ -153,7 +153,7 @@ services:
     ports:
       - "${ORDER_SERVICE_PORT}:8084"
     environment:
-      MONGO_URL: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@order-mongodb:27017
+      MONGO_URL: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@order-mongodb:27017/?authSource=admin
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
     networks:
       - ecommerce-network
@@ -192,6 +192,9 @@ services:
       CART_SERVICE_URL: http://cart-service:8083
       ORDER_SERVICE_URL: http://order-service:8084
       PAYMENT_SERVICE_URL: http://payment-service:8085
+    # ИСПРАВЛЕНО: Монтируем папку с ключами хоста прямо внутрь контейнера шлюза на лету
+    volumes:
+      - ./services/api-gateway/configs:/app/configs
     networks:
       - ecommerce-network
     depends_on:
