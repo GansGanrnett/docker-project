@@ -3,6 +3,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const client = require('prom-client');
 const CircuitBreaker = require('opossum');
 const axios = require('axios');
+const crypto = require('crypto'); // Встроенный модуль Node.js для генерации криптографических UUID
 const verifyToken = require('./authMiddleware');
 require('dotenv').config();
 
@@ -17,13 +18,37 @@ const httpRequestCounter = new client.Counter({
     labelNames: ['method', 'route', 'status']
 });
 
+// КРИТИЧЕСКИЙ МИДЛВАР: Трассировка и генерация сквозного Correlation ID
 app.use((req, res, next) => {
-    console.log(`[API-GATEWAY] ${req.method} ${req.url}`);
+    // Проверяем, пришел ли ID от клиента, или генерируем новый UUID v4 налету
+    const correlationId = req.headers['x-correlation-id'] || crypto.randomUUID();
+    
+    // Закрепляем идентификатор в текущем объекте запроса и ответа для внутренней логики
+    req.correlationId = correlationId;
+    res.setHeader('X-Correlation-ID', correlationId);
+
+    // Модифицируем стандартный вывод логов шлюза, впекая туда ID трассировки
+    console.log(`[${correlationId}] [API-GATEWAY] ${req.method} ${req.url}`);
+    
     res.on('finish', () => {
         httpRequestCounter.labels(req.method, req.path, res.statusCode).inc();
     });
     next();
 });
+
+// Функция конфигурации прокси, автоматически прокидывающая Correlation ID в заголовки бэкенда
+const configureProxyOptions = (targetPath) => {
+    return {
+        target: targetPath,
+        changeOrigin: true,
+        on: {
+            proxyReq: (proxyReq, req, res) => {
+                // Принудительно инжектируем UUID в заголовки исходящего запроса к микросервису
+                proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+            }
+        }
+    };
+};
 
 app.get('/metrics', async (req, res) => {
     res.set('Content-Type', client.register.contentType);
@@ -34,77 +59,63 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'UP', service: 'api-gateway' });
 });
 
-// === РЕЗИЛИЕНТНЫЙ СЛОЙ КАТАЛОГА (Go-Service) С ЗАЩИТОЙ CIRCUIT BREAKER ===
+// === CIRCUIT BREAKER ДЛЯ СЛУЖБЫ КАТАЛОГА ===
 const CATALOG_URL = process.env.CATALOG_SERVICE_URL || 'http://catalog-service:8082';
-
-async function fetchCatalogProducts() {
-    const response = await axios.get(`${CATALOG_URL}/products`, { timeout: 200 });
+async function fetchCatalogProducts(correlationId) {
+    // Передаем ID трассировки даже в синхронные axios запросы к Go бэкенду
+    const response = await axios.get(`${CATALOG_URL}/products`, { 
+        timeout: 200,
+        headers: { 'X-Correlation-ID': correlationId }
+    });
     return response.data;
 }
-
 const catalogBreaker = new CircuitBreaker(fetchCatalogProducts, {
     timeout: 250,
     errorThresholdPercentage: 50,
     resetTimeout: 10000
 });
-
-catalogBreaker.fallback(() => {
-    console.log("[CIRCUIT-BREAKER] Fallback activated! Serving cached static catalog matrix.");
-    return [
-        { "id": 999, "name": "Кэшированный Товар (Резервный контур)", "price": 0.00, "description": "Режим защиты от сбоев" }
-    ];
-});
+catalogBreaker.fallback(() => [
+    { "id": 999, "name": "Кэшированный Товар (Резервный контур)", "price": 0.00, "description": "Режим защиты от сбоев" }
+]);
 
 app.get('/api/v1/catalog/products', async (req, res) => {
-    try {
-        const data = await catalogBreaker.fire();
-        res.json(data);
-    } catch (error) {
-        res.status(500).json({ error: "Каталог недоступен, ошибка отказоустойчивого слоя." });
+    try { 
+        const data = await catalogBreaker.fire(req.correlationId);
+        res.json(data); 
+    } catch (error) { 
+        res.status(500).json({ error: "Каталог недоступен." }); 
     }
 });
 
-// === МАРШРУТИЗАЦИЯ ПЛАТФОРМЫ ===
-app.use('/api/v1/auth', createProxyMiddleware({
-    target: process.env.AUTH_SERVICE_URL || 'http://auth-service:8081',
-    changeOrigin: true,
-    pathRewrite: { '^/api/v1/auth': '' },
+// === МАРШРУТИЗАЦИЯ ВНУТРЕННИХ СЕРВИСОВ С ПОДДЕРЖКОЙ ТРАССИРОВКИ ===
+app.use('/api/v1/auth', createProxyMiddleware({ 
+    ...configureProxyOptions(process.env.AUTH_SERVICE_URL || 'http://auth-service:8081'),
+    pathRewrite: { '^/api/v1/auth': '' } 
 }));
 
-app.use('/api/v1/cart', verifyToken, createProxyMiddleware({
-    target: process.env.CART_SERVICE_URL || 'http://cart-service:8083',
-    changeOrigin: true,
-    pathRewrite: { '^/api/v1/cart': '' },
+app.use('/api/v1/cart', verifyToken, createProxyMiddleware({ 
+    ...configureProxyOptions(process.env.CART_SERVICE_URL || 'http://cart-service:8083'),
+    pathRewrite: { '^/api/v1/cart': '' } 
 }));
 
-app.use('/api/v1/payments', verifyToken, createProxyMiddleware({
-    target: process.env.PAYMENT_SERVICE_URL || 'http://payment-service:8085',
-    changeOrigin: true,
-    pathRewrite: { '^/api/v1/payments': '/api/v1/internal/payments/process' },
+app.use('/api/v1/payments', verifyToken, createProxyMiddleware({ 
+    ...configureProxyOptions(process.env.PAYMENT_SERVICE_URL || 'http://payment-service:8085'),
+    pathRewrite: { '^/api/v1/payments': '/api/v1/internal/payments/process' } 
 }));
 
-// ИСПРАВЛЕНО: Прямое прозрачное проксирование без pathRewrite, ломающего вложенные пути FastAPI
-app.use('/api/v1/analytics', verifyToken, createProxyMiddleware({
-    target: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8000',
-    changeOrigin: true
+app.use('/api/v1/analytics/summary', verifyToken, createProxyMiddleware({ 
+    ...configureProxyOptions('http://analytics-service:8000/summary'),
+    ignorePath: true 
 }));
 
 app.use((req, res, next) => {
     if (req.url.startsWith('/api/v1/orders')) {
         return verifyToken(req, res, () => {
-            createProxyMiddleware({
-                target: process.env.ORDER_SERVICE_URL || 'http://order-service:8084',
-                changeOrigin: true,
-            })(req, res, next);
+            createProxyMiddleware(configureProxyOptions(process.env.ORDER_SERVICE_URL || 'http://order-service:8084'))(req, res, next);
         });
     }
     next();
 });
 
-app.use((req, res) => {
-    res.status(404).json({ error: 'Route not found on API Gateway' });
-});
-
-app.listen(PORT, () => {
-    console.log(`=== API Gateway Protection started on port ${PORT} ===`);
-});
+app.use((req, res) => res.status(404).json({ error: 'Route not found on API Gateway' }));
+app.listen(PORT, () => console.log(`=== API Gateway с поддержкой Трассировки запущен на порту ${PORT} ===`));
