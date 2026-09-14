@@ -3,10 +3,9 @@ server:
 
 spring:
   datasource:
-    # Меняем 5434 на реальный 5432, который выдал docker compose ps
-    url: jdbc:postgresql://localhost:5432/auth_db
-    username: auth_user
-    password: auth_password_secure
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/auth_db}
+    username: ${SPRING_DATASOURCE_USERNAME:auth_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:auth_password_secure}
   jpa:
     hibernate:
       ddl-auto: update
@@ -14,6 +13,17 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
     show-sql: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: 'prometheus,health,info'
+  endpoint:
+    prometheus:
+      enabled: true
+    health:
+      show-details: always
 
 jwt:
   private-key-path: classpath:configs/private.pem

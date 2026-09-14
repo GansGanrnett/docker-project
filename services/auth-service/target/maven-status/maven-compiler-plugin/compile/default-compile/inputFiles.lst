@@ -1,4 +1,4 @@
-/root/project-root/services/auth-service/src/main/java/com/example/auth/JwtService.java
-/root/project-root/services/auth-service/src/main/java/com/example/auth/JwtConfig.java
-/root/project-root/services/auth-service/src/main/java/com/example/auth/AuthApplication.java
-/root/project-root/services/auth-service/src/main/java/com/example/auth/AuthController.java
+/app/src/main/java/com/example/auth/AuthApplication.java
+/app/src/main/java/com/example/auth/JwtService.java
+/app/src/main/java/com/example/auth/AuthController.java
+/app/src/main/java/com/example/auth/JwtConfig.java
