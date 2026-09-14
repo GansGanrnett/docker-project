@@ -12,7 +12,6 @@ volumes:
   rabbitmq_data:
 
 services:
-  # === ИНФРАСТРУКТУРНЫЕ БАЗЫ ДАННЫХ И БРОКЕРЫ ===
   auth-db:
     image: postgres:15-alpine
     container_name: auth-postgres
@@ -98,7 +97,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # === ПОЛИГЛОТНЫЕ МИКРОСЕРВИСЫ ===
   auth-service:
     build:
       context: ./services/auth-service
@@ -178,6 +176,21 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+      dockerfile: Dockerfile
+    container_name: analytics-fastapi
+    ports:
+      - "8086:8000"
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+    networks:
+      - ecommerce-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   api-gateway:
     build:
       context: ./services/api-gateway
@@ -191,8 +204,8 @@ services:
       CATALOG_SERVICE_URL: http://catalog-service:8082
       CART_SERVICE_URL: http://cart-service:8083
       ORDER_SERVICE_URL: http://order-service:8084
+      ANALYTICS_SERVICE_URL: http://analytics-service:8000
       PAYMENT_SERVICE_URL: http://payment-service:8085
-    # ИСПРАВЛЕНО: Монтируем папку с ключами хоста прямо внутрь контейнера шлюза на лету
     volumes:
       - ./services/api-gateway/configs:/app/configs
     networks:
@@ -204,7 +217,6 @@ services:
       - order-service
       - payment-service
 
-  # === СЛОЙ НАБЛЮДАЕМОСТИ ===
   prometheus:
     image: prom/prometheus:v2.45.0
     container_name: metrics-prometheus
@@ -229,3 +241,26 @@ services:
       - ecommerce-network
     depends_on:
       - prometheus
+
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: logs-loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - ecommerce-network
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: logs-promtail
+    volumes:
+      - /var/log:/var/log
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./infrastructure/monitoring/loki/promtail-config.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - ecommerce-network
+    depends_on:
+      - loki

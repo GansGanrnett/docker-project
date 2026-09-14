@@ -1,0 +1,64 @@
+global:
+  environment: production
+  networkPolicy:
+    enabled: true
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+
+# Настройки баз данных и инфраструктуры внутри K8s
+infrastructure:
+  authDb:
+    host: "auth-postgres-service"
+    name: "auth_db"
+    user: "postgres"
+  catalogDb:
+    host: "catalog-postgres-service"
+    name: "catalog_db"
+    user: "postgres"
+  redis:
+    host: "cart-redis-service"
+    port: 6379
+  mongodb:
+    host: "order-mongodb-service"
+    port: 27017
+  rabbitmq:
+    host: "message-rabbitmq-service"
+    port: 5672
+
+# Параметры масштабирования и ресурсов микросервисов
+services:
+  apiGateway:
+    replicaCount: 2
+    port: 8080
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+        
+  authService:
+    replicaCount: 2
+    port: 8081
+    resources:
+      limits:
+        cpu: "1000m"
+        memory: "1024Mi"
+        
+  catalogService:
+    replicaCount: 3
+    port: 8082
+    
+  cartService:
+    replicaCount: 2
+    port: 8083
+    
+  orderService:
+    replicaCount: 2
+    port: 8084
+    
+  paymentService:
+    replicaCount: 2
+    port: 8085
