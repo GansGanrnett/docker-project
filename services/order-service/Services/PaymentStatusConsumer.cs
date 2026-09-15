@@ -16,7 +16,7 @@ namespace OrderService.Services
 
         public PaymentStatusConsumer()
         {
-            var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://admin:secret@localhost:27017/?authSource=admin";
+            var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://order-mongodb-service:27017";
             var client = new MongoClient(mongoUrl);
             _ordersCollection = client.GetDatabase("orders_db").GetCollection<Order>("orders");
             InitRabbitMQ();
@@ -24,7 +24,7 @@ namespace OrderService.Services
 
         private void InitRabbitMQ()
         {
-            var rabbitUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL") ?? "amqp://admin:secret@localhost:5672";
+            var rabbitUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL") ?? "amqp://admin:ProdRabbitBrokerPass2026Secure99@message-rabbitmq-service:5672";
             var factory = new ConnectionFactory() { Uri = new Uri(rabbitUrl) };
             
             try {
@@ -32,9 +32,11 @@ namespace OrderService.Services
                 _channel = _connection.CreateModel();
                 _channel.ExchangeDeclare(exchange: "payment.events", type: "topic", durable: true);
                 _channel.QueueDeclare(queue: "orders.payment_statuses", durable: true, exclusive: false, autoDelete: false, arguments: null);
-                _channel.QueueBind(queue: "orders.payment_statuses", exchange: "payment.events", routing_key: "payment.success");
-            } catch {
-                Console.WriteLine("[no-id] --> Брокер RabbitMQ недоступен");
+                
+                // ИСПРАВЛЕНИЕ: Используем корректный camelCase параметр 'routingKey' вместо 'routing_key'
+                _channel.QueueBind(queue: "orders.payment_statuses", exchange: "payment.events", routingKey: "payment.success");
+            } catch (Exception ex) {
+                Console.WriteLine($"[no-id] --> Брокер RabbitMQ недоступен: {ex.Message}");
             }
         }
 
@@ -48,7 +50,6 @@ namespace OrderService.Services
                 var body = ea.Body.ToArray();
                 var message = Encoding.UTF8.GetString(body);
                 
-                // ИЗВЛЕЧЕНИЕ ТРАССИРОВКИ: Читаем заголовок из метаданных AMQP сообщения RabbitMQ
                 string correlationId = "no-id";
                 if (ea.BasicProperties.Headers != null && ea.BasicProperties.Headers.ContainsKey("X-Correlation-ID"))
                 {

@@ -1,25 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: order-service
+  name: analytics-service
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: order-service
+      app: analytics-service
   template:
     metadata:
       labels:
-        app: order-service
+        app: analytics-service
     spec:
       containers:
-        - name: order-service
-          image: order-service:local
+        - name: analytics-service
+          image: analytics-service:local
           imagePullPolicy: Never
           ports:
-            - containerPort: 80
+            - containerPort: 8000
           env:
-            - name: MONGO_URL
-              value: "mongodb://order-mongodb-service:27017"
             - name: RABBITMQ_URL
               value: "amqp://admin:ProdRabbitBrokerPass2026Secure99@message-rabbitmq-service:5672"
