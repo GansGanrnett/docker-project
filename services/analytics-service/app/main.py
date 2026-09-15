@@ -22,7 +22,7 @@ def get_analytics_summary():
     }
 
 def rabbitmq_consumer():
-    rabbit_url = os.getenv("RABBITMQ_URL", "amqp://admin:ProdRabbitBrokerPass2026Secure99@rabbitmq:5672")
+    rabbit_url = os.getenv("RABBITMQ_URL", "amqp://admin:ProdRabbitBrokerPass2026Secure99@message-rabbitmq-service:5672")
     
     while True:
         try:
@@ -34,7 +34,6 @@ def rabbitmq_consumer():
             channel.queue_bind(exchange='payment.events', queue='orders.analytics', routing_key='payment.success')
             
             def callback(ch, method, properties, body):
-                # ИЗВЛЕЧЕНИЕ ИЗ ШИНЫ: Достаем ID трассировки из словаря заголовков AMQP
                 correlation_id = "no-id"
                 if properties.headers and "X-Correlation-ID" in properties.headers:
                     correlation_id = properties.headers["X-Correlation-ID"]
