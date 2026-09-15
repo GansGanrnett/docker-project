@@ -9,6 +9,5 @@ spec:
       targetPort: 8080
       nodePort: 32080
       protocol: TCP
-      name: http
   selector:
     app: api-gateway
