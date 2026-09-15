@@ -18,7 +18,6 @@ const httpRequestCounter = new client.Counter({
     labelNames: ['method', 'route', 'status']
 });
 
-// Мидлвар генерации и сквозного проброса Correlation ID
 app.use((req, res, next) => {
     const correlationId = req.headers['x-correlation-id'] || crypto.randomUUID();
     req.correlationId = correlationId;
