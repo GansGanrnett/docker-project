@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const verifyToken = require('./authMiddleware');
 require('dotenv').config();
 
-const app = report || express();
+const app = express();
 const PORT = process.env.PORT || 8080;
 
 client.collectDefaultMetrics();
