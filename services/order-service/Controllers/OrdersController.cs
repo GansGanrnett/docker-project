@@ -1,67 +1,91 @@
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
-using OrderService.Models;
+using RabbitMQ.Client;
 using System;
-using System.Collections.Generic;
+using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
+using OrderService.Models;
+using OrderService.Saga.Events;
+using OrderService.Saga.Contracts;
 
 namespace OrderService.Controllers
 {
     [ApiController]
-    [Route("api/v1/orders")]
+    [Route("api/v1/[controller]")]
     public class OrdersController : ControllerBase
     {
         private readonly IMongoCollection<Order> _ordersCollection;
 
         public OrdersController()
         {
-            // Обновлен пароль на ProdMongoRootPass2026Secure99 без спецсимволов
-            var connectionString = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://admin:ProdMongoRootPass2026Secure99@order-mongodb:27017/?authSource=admin";
-            var client = new MongoClient(connectionString);
-            var database = client.GetDatabase("order_db");
-            _ordersCollection = database.GetCollection<Order>("orders");
+            var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://order-mongodb-service:27017";
+            var client = new MongoClient(mongoUrl);
+            _ordersCollection = client.GetDatabase("orders_db").GetCollection<Order>("orders");
         }
-
-        [HttpGet("health")]
-        public IActionResult Health() => Ok(new { status = "UP", service = "order-service" });
 
         [HttpPost]
-        public async Task<IActionResult> CreateOrder([FromBody] List<OrderItem> items)
+        public async Task<IActionResult> CreateOrder([FromBody] Order order)
         {
-            var username = Request.Headers["x-user-username"].ToString();
-            if (string.IsNullOrEmpty(username))
+            string correlationId = "no-id";
+            if (Request.Headers.TryGetValue("X-Correlation-ID", out var headerValue))
             {
-                return BadRequest(new { error = "Missing identity header x-user-username" });
+                correlationId = headerValue.ToString();
             }
 
-            if (items == null || items.Count == 0)
+            order.Id = Guid.NewGuid().ToString();
+            order.Status = "NEW";
+            order.CreatedAt = DateTime.UtcNow;
+
+            await _ordersCollection.InsertOneAsync(order);
+            Console.WriteLine($"[{correlationId}] [ORDER-SAGA-START] Order created in MongoDB with ID: {order.Id}");
+
+            var rabbitUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL") ?? "amqp://admin:ProdRabbitBrokerPass2026Secure99@message-rabbitmq-service:5672";
+            var factory = new ConnectionFactory() { Uri = new Uri(rabbitUrl) };
+
+            try
             {
-                return BadRequest(new { error = "Order items cannot be empty" });
+                using var connection = factory.CreateConnection();
+                using var channel = connection.CreateModel();
+
+                channel.ExchangeDeclare(exchange: "saga.order.events", type: "topic", durable: true);
+
+                var sagaMessage = new OrderSagaMessage
+                {
+                    SagaId = correlationId,
+                    OrderId = order.Id,
+                    ProductId = 1,
+                    Quantity = 1,
+                    TotalAmount = 999.99m,
+                    CurrentState = SagaState.OrderCreated.ToString(),
+                    Timestamp = DateTime.UtcNow
+                };
+
+                var jsonMessage = JsonSerializer.Serialize(sagaMessage);
+                var body = Encoding.UTF8.GetBytes(jsonMessage);
+
+                var properties = channel.CreateBasicProperties();
+                properties.Persistent = true;
+                properties.Headers = new System.Collections.Generic.Dictionary<string, object>
+                {
+                    { "X-Correlation-ID", correlationId }
+                };
+
+                channel.BasicPublish(
+                    exchange: "saga.order.events",
+                    routingKey: "order.created",
+                    basicProperties: properties,
+                    body: body
+                );
+
+                Console.WriteLine($"[{correlationId}] [ORDER-SAGA-PRODUCER] Saga transaction successfully broadcasted via RabbitMQ");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[{correlationId}] [ORDER-SAGA-CRASH] Broker transport failure: {ex.Message}");
             }
 
-            decimal total = 0;
-            foreach (var item in items) total += item.Price * item.Quantity;
-
-            var newOrder = new Order
-            {
-                Username = username,
-                Items = items,
-                TotalAmount = total,
-                Status = "PendingPayment"
-            };
-
-            await _ordersCollection.InsertOneAsync(newOrder);
-            return Ok(newOrder);
-        }
-
-        [HttpGet]
-        public async Task<ActionResult<List<Order>>> GetMyOrders()
-        {
-            var username = Request.Headers["x-user-username"].ToString();
-            if (string.IsNullOrEmpty(username)) return BadRequest(new { error = "Missing identity header" });
-
-            var orders = await _ordersCollection.Find(o => o.Username == username).ToListAsync();
-            return Ok(orders);
+            return CreatedAtAction(nameof(CreateOrder), new { id = order.Id }, order);
         }
     }
 }
