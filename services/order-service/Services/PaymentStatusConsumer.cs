@@ -1,53 +1,40 @@
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using MongoDB.Driver;
-using OrderService.Models;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
-using System;
 using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
+using OrderService.Models;
 
 namespace OrderService.Services
 {
     public class PaymentStatusConsumer : BackgroundService
     {
-        private readonly ILogger<PaymentStatusConsumer> _logger;
         private readonly IMongoCollection<Order> _ordersCollection;
         private IConnection? _connection;
         private IModel? _channel;
 
-        public PaymentStatusConsumer(ILogger<PaymentStatusConsumer> logger)
+        public PaymentStatusConsumer()
         {
-            _logger = logger;
-
-            // Обновлен пароль на ProdMongoRootPass2026Secure99 без спецсимволов
-            var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://admin:ProdMongoRootPass2026Secure99@order-mongodb:27017/?authSource=admin";
+            var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL") ?? "mongodb://admin:secret@localhost:27017/?authSource=admin";
             var client = new MongoClient(mongoUrl);
-            var database = client.GetDatabase("order_db");
-            _ordersCollection = database.GetCollection<Order>("orders");
-
+            _ordersCollection = client.GetDatabase("orders_db").GetCollection<Order>("orders");
             InitRabbitMQ();
         }
 
         private void InitRabbitMQ()
         {
-            try
-            {
-                var rabbitMqUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL") ?? "amqp://admin:ProdRabbitBrokerPass2026Secure99@rabbitmq:5672";
-                var factory = new ConnectionFactory() { Uri = new Uri(rabbitMqUrl) };
-                
+            var rabbitUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL") ?? "amqp://admin:secret@localhost:5672";
+            var factory = new ConnectionFactory() { Uri = new Uri(rabbitUrl) };
+            
+            try {
                 _connection = factory.CreateConnection();
                 _channel = _connection.CreateModel();
-                
+                _channel.ExchangeDeclare(exchange: "payment.events", type: "topic", durable: true);
                 _channel.QueueDeclare(queue: "orders.payment_statuses", durable: true, exclusive: false, autoDelete: false, arguments: null);
-                _logger.LogInformation("[RABBITMQ-CONSUMER] Successfully initialized connection and queue.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError($"[RABBITMQ-CONSUMER-ERROR] Initialization failed: {ex.Message}");
+                _channel.QueueBind(queue: "orders.payment_statuses", exchange: "payment.events", routing_key: "payment.success");
+            } catch {
+                Console.WriteLine("[no-id] --> Брокер RabbitMQ недоступен");
             }
         }
 
@@ -55,51 +42,40 @@ namespace OrderService.Services
         {
             if (_channel == null) return Task.CompletedTask;
 
-            stoppingToken.ThrowIfCancellationRequested();
-
             var consumer = new EventingBasicConsumer(_channel);
             consumer.Received += async (model, ea) =>
             {
                 var body = ea.Body.ToArray();
                 var message = Encoding.UTF8.GetString(body);
-                _logger.LogInformation($"[RABBITMQ-CONSUMER] Received message: {message}");
-
-                try
+                
+                // ИЗВЛЕЧЕНИЕ ТРАССИРОВКИ: Читаем заголовок из метаданных AMQP сообщения RabbitMQ
+                string correlationId = "no-id";
+                if (ea.BasicProperties.Headers != null && ea.BasicProperties.Headers.ContainsKey("X-Correlation-ID"))
                 {
-                    using var doc = JsonDocument.Parse(message);
-                    var root = doc.RootElement;
-                    var orderId = root.GetProperty("orderId").GetString();
-                    var status = root.GetProperty("status").GetString();
+                    var bytes = (byte[])ea.BasicProperties.Headers["X-Correlation-ID"];
+                    correlationId = Encoding.UTF8.GetString(bytes);
+                }
+                
+                try {
+                    using var jsonDoc = JsonDocument.Parse(message);
+                    var orderId = jsonDoc.RootElement.GetProperty("orderId").GetString();
+                    var status = jsonDoc.RootElement.GetProperty("status").GetString();
 
-                    if (!string.IsNullOrEmpty(orderId) && status == "SUCCESS")
+                    if (status == "SUCCESS" && !string.IsNullOrEmpty(orderId))
                     {
-                        var filter = Builders<Order>.Filter.Eq(o => o.Id, orderId);
-                        var update = Builders<Order>.Update.Set(o => o.Status, "Paid");
-                        
-                        var result = await _ordersCollection.UpdateOneAsync(filter, update);
-                        if (result.ModifiedCount > 0)
-                        {
-                            _logger.LogInformation($"[MONGODB] Order {orderId} status successfully set to Paid.");
-                        }
+                        var update = Builders<Order>.Update.Set(o => o.Status, "PAID");
+                        await _ordersCollection.UpdateOneAsync(o => o.Id == orderId, update);
+                        Console.WriteLine($"[{correlationId}] [ORDER-AMQP] Order [{orderId}] transitioned to PAID status successfully");
                     }
+                } catch (Exception ex) {
+                    Console.WriteLine($"[{correlationId}] [ORDER-ERROR] Failure parsing async payment event: {ex.Message}");
+                }
 
-                    _channel.BasicAck(deliveryTag: ea.DeliveryTag, multiple: false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError($"[RABBITMQ-CONSUMER-ERROR] Business logic failed: {ex.Message}");
-                }
+                _channel.BasicAck(ea.DeliveryTag, false);
             };
 
             _channel.BasicConsume(queue: "orders.payment_statuses", autoAck: false, consumer: consumer);
             return Task.CompletedTask;
-        }
-
-        public override void Dispose()
-        {
-            _channel?.Close();
-            _connection?.Close();
-            base.Dispose();
         }
     }
 }
