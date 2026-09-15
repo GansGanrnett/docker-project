@@ -3,7 +3,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const client = require('prom-client');
 const CircuitBreaker = require('opossum');
 const axios = require('axios');
-const crypto = require('crypto'); // Встроенный модуль Node.js для генерации криптографических UUID
+const crypto = require('crypto');
 const verifyToken = require('./authMiddleware');
 require('dotenv').config();
 
@@ -18,16 +18,11 @@ const httpRequestCounter = new client.Counter({
     labelNames: ['method', 'route', 'status']
 });
 
-// КРИТИЧЕСКИЙ МИДЛВАР: Трассировка и генерация сквозного Correlation ID
+// Мидлвар генерации и сквозного проброса Correlation ID
 app.use((req, res, next) => {
-    // Проверяем, пришел ли ID от клиента, или генерируем новый UUID v4 налету
     const correlationId = req.headers['x-correlation-id'] || crypto.randomUUID();
-    
-    // Закрепляем идентификатор в текущем объекте запроса и ответа для внутренней логики
     req.correlationId = correlationId;
     res.setHeader('X-Correlation-ID', correlationId);
-
-    // Модифицируем стандартный вывод логов шлюза, впекая туда ID трассировки
     console.log(`[${correlationId}] [API-GATEWAY] ${req.method} ${req.url}`);
     
     res.on('finish', () => {
@@ -36,14 +31,12 @@ app.use((req, res, next) => {
     next();
 });
 
-// Функция конфигурации прокси, автоматически прокидывающая Correlation ID в заголовки бэкенда
 const configureProxyOptions = (targetPath) => {
     return {
         target: targetPath,
         changeOrigin: true,
         on: {
             proxyReq: (proxyReq, req, res) => {
-                // Принудительно инжектируем UUID в заголовки исходящего запроса к микросервису
                 proxyReq.setHeader('X-Correlation-ID', req.correlationId);
             }
         }
@@ -59,10 +52,8 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'UP', service: 'api-gateway' });
 });
 
-// === CIRCUIT BREAKER ДЛЯ СЛУЖБЫ КАТАЛОГА ===
-const CATALOG_URL = process.env.CATALOG_SERVICE_URL || 'http://catalog-service:8082';
+const CATALOG_URL = process.env.CATALOG_SERVICE_URL || 'http://catalog-service:80';
 async function fetchCatalogProducts(correlationId) {
-    // Передаем ID трассировки даже в синхронные axios запросы к Go бэкенду
     const response = await axios.get(`${CATALOG_URL}/products`, { 
         timeout: 200,
         headers: { 'X-Correlation-ID': correlationId }
@@ -87,31 +78,25 @@ app.get('/api/v1/catalog/products', async (req, res) => {
     }
 });
 
-// === МАРШРУТИЗАЦИЯ ВНУТРЕННИХ СЕРВИСОВ С ПОДДЕРЖКОЙ ТРАССИРОВКИ ===
 app.use('/api/v1/auth', createProxyMiddleware({ 
-    ...configureProxyOptions(process.env.AUTH_SERVICE_URL || 'http://auth-service:8081'),
+    ...configureProxyOptions(process.env.AUTH_SERVICE_URL || 'http://auth-service:80'),
     pathRewrite: { '^/api/v1/auth': '' } 
 }));
 
 app.use('/api/v1/cart', verifyToken, createProxyMiddleware({ 
-    ...configureProxyOptions(process.env.CART_SERVICE_URL || 'http://cart-service:8083'),
+    ...configureProxyOptions(process.env.CART_SERVICE_URL || 'http://cart-service:80'),
     pathRewrite: { '^/api/v1/cart': '' } 
 }));
 
 app.use('/api/v1/payments', verifyToken, createProxyMiddleware({ 
-    ...configureProxyOptions(process.env.PAYMENT_SERVICE_URL || 'http://payment-service:8085'),
-    pathRewrite: { '^/api/v1/payments': '/api/v1/internal/payments/process' } 
-}));
-
-app.use('/api/v1/analytics/summary', verifyToken, createProxyMiddleware({ 
-    ...configureProxyOptions('http://analytics-service:8000/summary'),
-    ignorePath: true 
+    ...configureProxyOptions(process.env.PAYMENT_SERVICE_URL || 'http://payment-service:80'),
+    pathRewrite: { '^/api/v1/payments': '' } 
 }));
 
 app.use((req, res, next) => {
     if (req.url.startsWith('/api/v1/orders')) {
         return verifyToken(req, res, () => {
-            createProxyMiddleware(configureProxyOptions(process.env.ORDER_SERVICE_URL || 'http://order-service:8084'))(req, res, next);
+            createProxyMiddleware(configureProxyOptions(process.env.ORDER_SERVICE_URL || 'http://order-service:80'))(req, res, next);
         });
     }
     next();
