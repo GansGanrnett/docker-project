@@ -1,18 +1,18 @@
-# === Этап 1: Компиляция одиночного бинарного файла ===
-FROM golang:1.21-alpine AS builder
+FROM golang:1.22-alpine AS builder
 WORKDIR /app
 
-# Копируем СТРОГО один единственный файл исходного кода
-COPY cmd/main.go ./main.go
+# Копируем файлы описания модулей для предварительного кэширования зависимостей
+COPY go.mod go.sum ./
+RUN go mod download
 
-# Компилируем файл напрямую без использования инфраструктуры модулей go.mod
-RUN CGO_ENABLED=0 GOOS=linux go build -o catalog-app main.go
+# Копируем абсолютно весь исходный код микросервиса, включая pkg/rabbitmq
+COPY . .
 
-# === Этап 2: Финальный продакшн рантайм ===
-FROM alpine:3.19
+# Компилируем весь проект целиком, а не один файл main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o catalog-app ./cmd/main.go
+
+FROM alpine:latest
 WORKDIR /app
-RUN apk add --no-cache curl
 COPY --from=builder /app/catalog-app .
-
 EXPOSE 8082
 CMD ["./catalog-app"]
