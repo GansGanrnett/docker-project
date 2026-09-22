@@ -1,4 +1,3 @@
-![Header](./banner_github.png)
 #  Polyglot Microservices Cluster with CI/CD & Monitoring
 
 [![CI/CD](https://github.com/GansGanrnett/docker-project/actions/workflows/ci.yml/badge.svg)](https://github.com/GansGanrnett/docker-project/actions)
