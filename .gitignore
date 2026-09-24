@@ -1,1 +1,30 @@
+# Секреты — НИКОГДА не коммитить
+*.pem
+*.key
+*.p12
+*.jks
 .env
+.env.*
+!.env.example
+
+# Сборочные артефакты
+target/
+node_modules/
+dist/
+build/
+*.class
+*.jar
+
+# Логи
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE / ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
