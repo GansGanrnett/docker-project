@@ -1,8 +1,8 @@
-# Значения для payment-service.
+# Значения для analytics-service.
 # Реальный образ приложения (а не nginx-заготовка helm create).
-replicaCount: 2
+replicaCount: 1
 image:
-  repository: ghcr.io/gansganrnett/docker-project/payment-service
+  repository: ghcr.io/gansganrnett/docker-project/analytics-service
   pullPolicy: IfNotPresent
   tag: "latest"
 
@@ -36,7 +36,7 @@ securityContext:
 
 service:
   type: ClusterIP
-  port: 8085
+  port: 8000
 
 ingress:
   enabled: false
