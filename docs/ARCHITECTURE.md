@@ -26,86 +26,21 @@ NetworkPolicy (входящий трафик разрешён только от 
 
 ### Внешняя экспозиция (только loopback `127.0.0.1`)
 
-| Компонент | Порт на хосте | Примечание |
-|---|---|---|
-| API Gateway | `${GATEWAY_PORT}` (по умолч. `8080`) | единственный входной шлюз |
-| Auth Service | `${AUTH_SERVICE_PORT}` = `8081` | loopback |
-| Catalog Service | `${CATALOG_SERVICE_PORT}` = `8082` | loopback |
-| Cart Service | `${CART_SERVICE_PORT}` = `8083` | loopback |
-| Order Service | `${ORDER_SERVICE_PORT}` = `8084` | loopback |
-| Payment Service | `${PAYMENT_SERVICE_PORT}` = `8085` | loopback |
-| Analytics Service | `8086` | loopback |
-| PostgreSQL (auth/catalog) | `5432` / `5433` | loopback, healthcheck `pg_isready` |
-| Redis | `6379` | loopback, только с `--requirepass` |
-| MongoDB | `27017` | loopback, root-учётка |
-| RabbitMQ AMQP / Management | `5672` / `${RABBITMQ_MANAGEMENT_PORT}` | loopback |
-| Prometheus / Grafana | `9090` / `${GRAFANA_PORT}` | Grafana — loopback + пароль админа |
-| Loki / Promtail | `3100` | loopback |
-
-### Диаграмма топологии (Mermaid)
-
-```mermaid
-flowchart LR
-    subgraph Client["Клиент (внешний мир)"]
-        U[Пользователь]
-    end
-
-    subgraph Edge["Edge Layer"]
-        GW["API Gateway<br/>Node.js Express :8080<br/>JWT-verify, RBAC, rate-limit, circuit breaker"]
-    end
-
-    subgraph Services["Сервисный контур"]
-        AUTH["Auth Service<br/>Java Spring Boot :8081"]
-        CAT["Catalog Service<br/>Go :8082<br/>— products, metrics"]
-        CART["Cart Service<br/>Node.js :8083<br/>— Redis"]
-        ORD["Order Service<br/>.NET 8 :8084<br/>— MongoDB"]
-        PAY["Payment Service<br/>Python FastAPI :8085<br/>— Лун, события"]
-        AN["Analytics Service<br/>Python FastAPI :8000<br/>— MongoDB"]
-    end
-
-    subgraph Data["Хранилища"]
-        PG_A["PostgreSQL auth-db<br/>:5432"]
-        PG_C["PostgreSQL catalog-db<br/>:5433"]
-        REDIS["Redis cart-cache<br/>:6379 (AUTH)"]
-        MONGO["MongoDB order-db<br/>:27017"]
-    end
-
-    subgraph Bus["Шина событий"]
-        RMQ["RabbitMQ :5672<br/>exchange payment.events<br/>DLX payment.events.dlx"]
-    end
-
-    U -->|"HTTPS, порт 8080"| GW
-    GW -->|"/api/v1/auth"| AUTH
-    GW -->|"/api/v1/catalog/products"| CAT
-    GW -->|"/api/v1/cart"| CART
-    GW -->|"/api/v1/orders"| ORD
-    GW -->|"/api/v1/payments (ROLE_ADMIN)"| PAY
-    GW -->|"/api/v1/analytics (ROLE_ADMIN)"| AN
-
-    AUTH --> PG_A
-    CAT --> PG_C
-    CART --> REDIS
-    ORD --> MONGO
-    ORD -.->|"HTTP (серверные цены)"| CAT
-
-    PAY -->|"publish payment.success / payment.declined"| RMQ
-    RMQ -->|"payment.success"| AN
-    RMQ -->|"payment.*"| ORD
-
-    subgraph Obs["Observability"]
-        PROM["Prometheus :9090"]
-        GRAF["Grafana :3000"]
-        LOKI["Loki :3100"]
-    end
-    CAT -.->|"/metrics"| PROM
-    ORD -.->|"/metrics"| PROM
-    PAY -.->|"/metrics"| PROM
-    AN -.->|"/metrics"| PROM
-    GW -.->|"/metrics"| PROM
-    PROM --> GRAF
-    LOKI -->|"логи (containers:ro)"| GRAF
-```
-
+| Компонент                  | Порт на хосте                          | Примечание                         |
+| -------------------------- | -------------------------------------- | ---------------------------------- |
+| API Gateway                | `${GATEWAY_PORT}` (по умолч. `8080`)   | единственный входной шлюз          |
+| Auth Service               | `${AUTH_SERVICE_PORT}` = `8081`        | loopback                           |
+| Catalog Service            | `${CATALOG_SERVICE_PORT}` = `8082`     | loopback                           |
+| Cart Service               | `${CART_SERVICE_PORT}` = `8083`        | loopback                           |
+| Order Service              | `${ORDER_SERVICE_PORT}` = `8084`       | loopback                           |
+| Payment Service            | `${PAYMENT_SERVICE_PORT}` = `8085`     | loopback                           |
+| Analytics Service          | `8086`                                 | loopback                           |
+| PostgreSQL (auth/catalog)  | `5432` / `5433`                        | loopback, healthcheck `pg_isready` |
+| Redis                      | `6379`                                 | loopback, только с `--requirepass` |
+| MongoDB                    | `27017`                                | loopback, root-учётка              |
+| RabbitMQ AMQP / Management | `5672` / `${RABBITMQ_MANAGEMENT_PORT}` | loopback                           |
+| Prometheus / Grafana       | `9090` / `${GRAFANA_PORT}`             | Grafana — loopback + пароль админа |
+| Loki / Promtail            | `3100`                                 | loopback                           |
 ### Вертикальная диаграмма топологии (сверху вниз)
 
 ```mermaid
