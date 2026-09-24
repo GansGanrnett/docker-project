@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+﻿name: CI/CD Pipeline
 
 on:
   push:
@@ -172,7 +172,7 @@ jobs:
       - name: Go build & test (catalog-service)
         working-directory: services/catalog-service
         run: |
-          go build ./...
+          go vet ./...
           go test ./...
 
       - name: Set up Python
