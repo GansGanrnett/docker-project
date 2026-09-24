@@ -13,10 +13,15 @@ env:
   IMAGE_NAME: ${{ github.repository }}
   IMAGE_TAG: ${{ github.sha }}
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   security-scan:
     name: Secret & Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,6 +46,7 @@ jobs:
   changes:
     name: Detect Changed Paths
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       shared: ${{ steps.filter.outputs.shared }}
       infrastructure: ${{ steps.filter.outputs.infrastructure }}
@@ -65,6 +71,7 @@ jobs:
   validate-contracts:
     name: Validate OpenAPI & Protobuf
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.shared == 'true' || github.event_name == 'pull_request'
     steps:
@@ -93,6 +100,7 @@ jobs:
   lint-infrastructure:
     name: Lint Helm & K8s manifests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.infrastructure == 'true' || github.event_name == 'pull_request'
     steps:
@@ -111,6 +119,7 @@ jobs:
   build-services:
     name: Build & Push Docker images
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
     permissions:
@@ -159,6 +168,7 @@ jobs:
   run-tests:
     name: Run Unit Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
     steps:
@@ -201,6 +211,7 @@ jobs:
   check-scripts:
     name: Validate automation scripts
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
     steps:
@@ -211,3 +222,4 @@ jobs:
           scandir: './scripts'
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
+
