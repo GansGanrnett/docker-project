@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+﻿name: CI/CD Pipeline
 
 on:
   push:
@@ -13,10 +13,40 @@ env:
   IMAGE_NAME: ${{ github.repository }}
   IMAGE_TAG: ${{ github.sha }}
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  security-scan:
+    name: Secret & Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for secrets with Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+      - name: Scan for hardcoded credentials
+        run: |
+          if grep -rE --include='*.py' --include='*.js' --include='*.java' --include='*.cs' \
+            -e 'Prod[A-Za-z]+Pass[0-9A-Za-z]+' \
+            -e 'secure_pass' -e 'admin_rabbit' -e 'payment_pass' \
+            -e 'password\s*[:=]\s*["'"'"'][^"'"'"'\$]' \
+            -E services/ shared/ scripts/; then
+            echo "::error::Hardcoded credentials found in source code"
+            exit 1
+          fi
+          echo "No hardcoded credentials detected."
+
   changes:
     name: Detect Changed Paths
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       shared: ${{ steps.filter.outputs.shared }}
       infrastructure: ${{ steps.filter.outputs.infrastructure }}
@@ -41,6 +71,7 @@ jobs:
   validate-contracts:
     name: Validate OpenAPI & Protobuf
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.shared == 'true' || github.event_name == 'pull_request'
     steps:
@@ -69,6 +100,7 @@ jobs:
   lint-infrastructure:
     name: Lint Helm & K8s manifests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.infrastructure == 'true' || github.event_name == 'pull_request'
     steps:
@@ -87,6 +119,7 @@ jobs:
   build-services:
     name: Build & Push Docker images
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
     permissions:
@@ -132,9 +165,53 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  run-tests:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Go build & test (catalog-service)
+        working-directory: services/catalog-service
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test deps
+        run: |
+          pip install pytest==8.0.0
+          pip install -r services/payment-service/requirements.txt
+          pip install -r services/analytics-service/requirements.txt
+
+      - name: Test payment-service
+        working-directory: services/payment-service
+        run: python -m pytest tests/ -v
+
+      - name: Test analytics-service
+        working-directory: services/analytics-service
+        run: python -m pytest tests/ -v
+
+      - name: Build order-service (.NET)
+        working-directory: services/order-service
+        run: dotnet build --nologo --verbosity quiet
+
   check-scripts:
     name: Validate automation scripts
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
     steps:
@@ -145,3 +222,4 @@ jobs:
           scandir: './scripts'
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
+

@@ -1,8 +1,12 @@
+import os
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = "postgresql://payment_user:payment_pass@postgres-payment/payment_db"
+# ВАЖНО: все строки подключения — только через переменные окружения, никаких паролей в коде.
+DATABASE_URL = os.getenv(
+    "PAYMENT_DATABASE_URL",
+    "postgresql://payment_user:""@postgres-payment/payment_db",
+)
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

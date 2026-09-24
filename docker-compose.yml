@@ -10,6 +10,8 @@ volumes:
   mongo_order_data:
   redis_data:
   rabbitmq_data:
+  grafana_data:
+  loki_data:
 
 services:
   auth-db:
@@ -20,13 +22,13 @@ services:
       POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD}
       POSTGRES_DB: ${AUTH_DB_NAME}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_auth_data:/var/lib/postgresql/data
     networks:
       - ecommerce-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AUTH_DB_USER} -d ${AUTH_DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U $${AUTH_DB_USER} -d $${AUTH_DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -39,7 +41,7 @@ services:
       POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD}
       POSTGRES_DB: ${CATALOG_DB_NAME}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_catalog_data:/var/lib/postgresql/data
     networks:
@@ -53,14 +55,15 @@ services:
   cart-cache:
     image: redis:7.0-alpine
     container_name: cart-redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     networks:
       - ecommerce-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a ${REDIS_PASSWORD} ping | grep PONG"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -72,9 +75,14 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongo_order_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - ecommerce-network
 
@@ -82,8 +90,8 @@ services:
     image: rabbitmq:3.12-management-alpine
     container_name: message-rabbitmq
     ports:
-      - "5672:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT}:15672"
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
@@ -103,11 +111,15 @@ services:
       dockerfile: Dockerfile
     container_name: auth-service
     ports:
-      - "${AUTH_SERVICE_PORT}:8081"
+      - "127.0.0.1:${AUTH_SERVICE_PORT}:8081"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://auth-db:5432/${AUTH_DB_NAME}
       SPRING_DATASOURCE_USERNAME: ${AUTH_DB_USER}
       SPRING_DATASOURCE_PASSWORD: ${AUTH_DB_PASSWORD}
+      AUTH_ADMIN_USER: ${AUTH_ADMIN_USER:-admin}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD}
+    volumes:
+      - ./services/auth-service/configs:/app/configs:ro
     networks:
       - ecommerce-network
     depends_on:
@@ -120,7 +132,7 @@ services:
       dockerfile: Dockerfile
     container_name: catalog-service
     ports:
-      - "${CATALOG_SERVICE_PORT}:8082"
+      - "127.0.0.1:${CATALOG_SERVICE_PORT}:8082"
     networks:
       - ecommerce-network
     depends_on:
@@ -133,10 +145,10 @@ services:
       dockerfile: Dockerfile
     container_name: cart-service
     ports:
-      - "${CART_SERVICE_PORT}:8083"
+      - "127.0.0.1:${CART_SERVICE_PORT}:8083"
     environment:
       PORT: 8083
-      REDIS_URL: redis://cart-cache:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD}@cart-cache:6379
     networks:
       - ecommerce-network
     depends_on:
@@ -149,14 +161,18 @@ services:
       dockerfile: Dockerfile
     container_name: order-service
     ports:
-      - "${ORDER_SERVICE_PORT}:8084"
+      - "127.0.0.1:${ORDER_SERVICE_PORT}:8084"
     environment:
       MONGO_URL: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@order-mongodb:27017/?authSource=admin
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      JWT_PUBLIC_KEY_PATH: /app/configs/public.pem
+      CATALOG_SERVICE_URL: http://catalog-service:8082
+    volumes:
+      - ./services/api-gateway/configs/public.pem:/app/configs/public.pem:ro
     networks:
       - ecommerce-network
     depends_on:
-      auth-db:
+      order-db:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
@@ -167,7 +183,7 @@ services:
       dockerfile: Dockerfile
     container_name: payment-service
     ports:
-      - "${PAYMENT_SERVICE_PORT}:8085"
+      - "127.0.0.1:${PAYMENT_SERVICE_PORT}:8085"
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
     networks:
@@ -182,7 +198,7 @@ services:
       dockerfile: Dockerfile
     container_name: analytics-fastapi
     ports:
-      - "8086:8000"
+      - "127.0.0.1:8086:8000"
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
     networks:
@@ -207,7 +223,7 @@ services:
       ANALYTICS_SERVICE_URL: http://analytics-service:8000
       PAYMENT_SERVICE_URL: http://payment-service:8085
     volumes:
-      - ./services/api-gateway/configs:/app/configs
+      - ./services/api-gateway/configs:/app/configs:ro
     networks:
       - ecommerce-network
     depends_on:
@@ -233,10 +249,12 @@ services:
     image: grafana/grafana:10.0.0
     container_name: dashboard-grafana
     ports:
-      - "${GRAFANA_PORT}:3000"
+      - "127.0.0.1:${GRAFANA_PORT}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
     networks:
       - ecommerce-network
     depends_on:
@@ -246,8 +264,10 @@ services:
     image: grafana/loki:2.9.0
     container_name: logs-loki
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
     networks:
       - ecommerce-network
 
@@ -255,9 +275,8 @@ services:
     image: grafana/promtail:2.9.0
     container_name: logs-promtail
     volumes:
-      - /var/log:/var/log
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./infrastructure/monitoring/loki/promtail-config.yml:/etc/promtail/config.yml
     command: -config.file=/etc/promtail/config.yml
     networks:

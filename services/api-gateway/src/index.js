@@ -3,6 +3,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const client = require('prom-client');
 const CircuitBreaker = require('opossum');
 const axios = require('axios');
+const rateLimit = require('express-rate-limit');
 const verifyToken = require('./authMiddleware');
 require('dotenv').config();
 
@@ -64,34 +65,43 @@ app.get('/api/v1/catalog/products', async (req, res) => {
     }
 });
 
+// === ЛИМИТ ЗАПРОСОВ: защита login-эндпоинта от перебора пароля (brute-force) ===
+const loginLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 минут
+    max: 10,                 // максимум 10 попыток логина
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many login attempts. Try again later.' }
+});
+
 // === МАРШРУТИЗАЦИЯ ПЛАТФОРМЫ ===
-app.use('/api/v1/auth', createProxyMiddleware({
+app.use('/api/v1/auth', loginLimiter, createProxyMiddleware({
     target: process.env.AUTH_SERVICE_URL || 'http://auth-service:8081',
     changeOrigin: true,
     pathRewrite: { '^/api/v1/auth': '' },
 }));
 
-app.use('/api/v1/cart', verifyToken, createProxyMiddleware({
+app.use('/api/v1/cart', verifyToken(), createProxyMiddleware({
     target: process.env.CART_SERVICE_URL || 'http://cart-service:8083',
     changeOrigin: true,
     pathRewrite: { '^/api/v1/cart': '' },
 }));
 
-app.use('/api/v1/payments', verifyToken, createProxyMiddleware({
+app.use('/api/v1/payments', verifyToken('ROLE_ADMIN'), createProxyMiddleware({
     target: process.env.PAYMENT_SERVICE_URL || 'http://payment-service:8085',
     changeOrigin: true,
     pathRewrite: { '^/api/v1/payments': '/api/v1/internal/payments/process' },
 }));
 
 // ИСПРАВЛЕНО: Прямое прозрачное проксирование без pathRewrite, ломающего вложенные пути FastAPI
-app.use('/api/v1/analytics', verifyToken, createProxyMiddleware({
+app.use('/api/v1/analytics', verifyToken('ROLE_ADMIN'), createProxyMiddleware({
     target: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8000',
     changeOrigin: true
 }));
 
 app.use((req, res, next) => {
     if (req.url.startsWith('/api/v1/orders')) {
-        return verifyToken(req, res, () => {
+        return verifyToken()(req, res, () => {
             createProxyMiddleware({
                 target: process.env.ORDER_SERVICE_URL || 'http://order-service:8084',
                 changeOrigin: true,

@@ -5,9 +5,11 @@ const path = require('path');
 const publicKeyPath = path.resolve(__dirname, '../configs/public.pem');
 const publicKey = fs.readFileSync(publicKeyPath, 'utf8');
 
-module.exports = (req, res, next) => {
+// authMiddleware()            -> требует валидный JWT (любая роль)
+// authMiddleware('ROLE_ADMIN')-> требует JWT + конкретную роль (RBAC)
+module.exports = (requiredRole) => (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'Access denied. No token provided.' });
     }
@@ -19,6 +21,11 @@ module.exports = (req, res, next) => {
         const decoded = jwt.verify(token, publicKey, { algorithms: ['RS256'] });
         req.headers['x-user-username'] = decoded.sub;
         req.headers['x-user-role'] = decoded.role;
+
+        // Проверка роли: в маршрутах оплаты и заказов допускаются только нужные роли
+        if (requiredRole && decoded.role !== requiredRole) {
+            return res.status(403).json({ error: `Forbidden. Role '${requiredRole}' required.` });
+        }
         next();
     } catch (error) {
         return res.status(403).json({ error: 'Invalid or expired token.' });

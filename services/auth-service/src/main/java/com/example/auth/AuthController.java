@@ -20,14 +20,16 @@ public class AuthController {
         String username = loginRequest.get("username");
         String password = loginRequest.get("password");
 
-        // Валидация учетных данных для тестирования Фазы 4
-        if ("admin".equals(username) && "secure_pass".equals(password)) {
+        // Учётные данные берутся из окружения (см. .env / compose), не хардкодятся
+        String adminUsername = System.getenv().getOrDefault("AUTH_ADMIN_USER", "admin");
+        String adminPassword = System.getenv().getOrDefault("AUTH_ADMIN_PASSWORD", "");
+        if (!adminPassword.isEmpty() && adminUsername.equals(username) && adminPassword.equals(password)) {
             String token = jwtService.generateToken(username, "ROLE_ADMIN");
 
             Map<String, String> response = new HashMap<>();
             response.put("access_token", token);
             response.put("token_type", "Bearer");
-            
+
             return ResponseEntity.ok(response);
         }
 

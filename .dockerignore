@@ -1,7 +1,10 @@
 .git
 .gitignore
+*.pem
+*.key
 *.log
-gateway.log
-auth.log
+target/
 scripts/
 .github/
+.env
+.env.*
