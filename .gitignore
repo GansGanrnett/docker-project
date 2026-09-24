@@ -28,3 +28,9 @@ __pycache__/
 .vscode/
 .DS_Store
 Thumbs.db
+# временные локальные скрипты (не коммитим)
+fixes/
+
+# корневой package-lock (не принадлежит сервисам)
+/package-lock.json
+
