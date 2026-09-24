@@ -16,9 +16,25 @@ scrape_configs:
     static_configs:
       - targets: ['auth-service:8081']
 
+  - job_name: 'catalog-service'
+    static_configs:
+      - targets: ['catalog-service:8082']
+
+  - job_name: 'cart-service'
+    static_configs:
+      - targets: ['cart-service:8083']
+
+  - job_name: 'order-service'
+    static_configs:
+      - targets: ['order-service:8084']
+
   - job_name: 'payment-service'
     static_configs:
       - targets: ['payment-service:8085']
+
+  - job_name: 'analytics-service'
+    static_configs:
+      - targets: ['analytics-service:8000']
 
   # НОВЫЙ ТАРГЕТ: Сбор метрик очередей сообщений
   - job_name: 'rabbitmq'
