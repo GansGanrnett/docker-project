@@ -1,9 +1,23 @@
 const express = require('express');
 const { createClient } = require('redis');
+const client = require('prom-client');
 require('dotenv').config();
 
 const app = express();
 app.use(express.json());
+
+client.collectDefaultMetrics();
+
+const cartRequests = new client.Counter({
+    name: 'cart_http_requests_total',
+    help: 'Total number of HTTP requests processed by Cart Service',
+    labelNames: ['method', 'route', 'status']
+});
+
+app.use((req, res, next) => {
+    res.on('finish', () => cartRequests.labels(req.method, req.path, res.statusCode).inc());
+    next();
+});
 
 const PORT = process.env.PORT || 8083;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -22,6 +36,12 @@ initRedis().catch(console.error);
 // Внутренний Healthcheck
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'UP', service: 'cart-service' });
+});
+
+// Метрики Prometheus
+app.get('/metrics', async (req, res) => {
+    res.set('Content-Type', client.register.contentType);
+    res.end(await client.register.metrics());
 });
 
 // Получить корзину текущего авторизованного пользователя
@@ -46,7 +66,17 @@ app.post('/items', async (req, res) => {
     const { productId, name, quantity, price } = req.body;
 
     if (!username) return res.status(400).json({ error: 'Missing identity header' });
-    if (!productId || !quantity) return res.status(400).json({ error: 'Invalid payload items' });
+    if (!productId) return res.status(400).json({ error: 'Invalid payload items' });
+
+    // Валидация типов: quantity/price — числа, без NaN/отрицательных значений
+    const qty = Number(quantity);
+    const unitPrice = Number(price);
+    if (!Number.isInteger(qty) || qty < 1) {
+        return res.status(400).json({ error: 'quantity must be a positive integer' });
+    }
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        return res.status(400).json({ error: 'price must be a non-negative number' });
+    }
 
     try {
         const key = `cart:${username}`;
@@ -56,9 +86,9 @@ app.post('/items', async (req, res) => {
         // Ищем, есть ли уже такой товар в корзине
         const existingItem = cart.items.find(item => item.productId === productId);
         if (existingItem) {
-            existingItem.quantity += quantity;
+            existingItem.quantity = Number(existingItem.quantity) + qty;
         } else {
-            cart.items.push({ productId, name, quantity, price });
+            cart.items.push({ productId, name, quantity: qty, price: unitPrice });
         }
 
         // Записываем в Redis со сроком жизни 7 дней (авто-очистка брошенных корзин)

@@ -10,6 +10,7 @@ ENV NODE_ENV=production
 USER node
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/src ./src
+COPY --chown=node:node --from=builder /app/configs ./configs
 COPY --chown=node:node --from=builder /app/package*.json ./
 
 EXPOSE 8080
