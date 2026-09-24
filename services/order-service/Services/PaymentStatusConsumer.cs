@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Hosting;
+﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MongoDB.Driver;
 using OrderService.Models;
@@ -53,12 +53,12 @@ namespace OrderService.Services
             _connection = factory.CreateConnection();
             _channel = _connection.CreateModel();
 
-            // Единый topic-exchange с payment-service: payment.main публикует события
-            // с routing key payment.success / payment.declined
+            // Р•РґРёРЅС‹Р№ topic-exchange СЃ payment-service: payment.main РїСѓР±Р»РёРєСѓРµС‚ СЃРѕР±С‹С‚РёСЏ
+            // СЃ routing key payment.success / payment.declined
             _channel.ExchangeDeclare(exchange: PAYMENT_EXCHANGE, type: "topic", durable: true);
             _channel.ExchangeDeclare(exchange: DEAD_LETTER_EXCHANGE, type: "fanout", durable: true);
             _channel.QueueDeclare(queue: DEAD_LETTER_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: null);
-            _channel.QueueBind(exchange: DEAD_LETTER_EXCHANGE, queue: DEAD_LETTER_QUEUE);
+            _channel.QueueBind(queue: DEAD_LETTER_QUEUE, exchange: DEAD_LETTER_EXCHANGE, routingKey: "");
 
             var dlqArgs = new Dictionary<string, object> { { "x-dead-letter-exchange", DEAD_LETTER_EXCHANGE } };
             _channel.QueueDeclare(queue: PAYMENT_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: dlqArgs);
@@ -70,7 +70,7 @@ namespace OrderService.Services
 
         protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            // Реконнект: при недоступном брокере на старте не умираем молча, а ждём
+            // Р РµРєРѕРЅРЅРµРєС‚: РїСЂРё РЅРµРґРѕСЃС‚СѓРїРЅРѕРј Р±СЂРѕРєРµСЂРµ РЅР° СЃС‚Р°СЂС‚Рµ РЅРµ СѓРјРёСЂР°РµРј РјРѕР»С‡Р°, Р° Р¶РґС‘Рј
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
@@ -102,8 +102,8 @@ namespace OrderService.Services
 
         private async void OnMessageReceived(object? sender, BasicDeliverEventArgs ea)
         {
-            // Сериализация обработки на канале: в .NET-клиенте RabbitMQ нельзя
-            // безопасно использовать один IModel из нескольких потоков одновременно
+            // РЎРµСЂРёР°Р»РёР·Р°С†РёСЏ РѕР±СЂР°Р±РѕС‚РєРё РЅР° РєР°РЅР°Р»Рµ: РІ .NET-РєР»РёРµРЅС‚Рµ RabbitMQ РЅРµР»СЊР·СЏ
+            // Р±РµР·РѕРїР°СЃРЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РѕРґРёРЅ IModel РёР· РЅРµСЃРєРѕР»СЊРєРёС… РїРѕС‚РѕРєРѕРІ РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ
             await _processingLock.WaitAsync();
             try
             {
@@ -148,7 +148,7 @@ namespace OrderService.Services
             catch (Exception ex)
             {
                 _logger.LogError("[RABBITMQ-CONSUMER-ERROR] Business logic failed: {Message}. Sending to DLQ.", ex.Message);
-                // Не зацикливаем requeue: битое сообщение уходит в мёртвую очередь
+                // РќРµ Р·Р°С†РёРєР»РёРІР°РµРј requeue: Р±РёС‚РѕРµ СЃРѕРѕР±С‰РµРЅРёРµ СѓС…РѕРґРёС‚ РІ РјС‘СЂС‚РІСѓСЋ РѕС‡РµСЂРµРґСЊ
                 channel.BasicNack(deliveryTag: ea.DeliveryTag, multiple: false, requeue: false);
             }
         }
