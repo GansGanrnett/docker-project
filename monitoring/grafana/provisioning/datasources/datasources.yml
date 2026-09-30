@@ -1,0 +1,30 @@
+apiVersion: 1
+
+# Datasources provisioned at Grafana startup.
+# Without this, a fresh Grafana volume has no datasources and every panel
+# stays empty. Provisioning is idempotent: Grafana updates existing entries
+# by uid, so re-applying this file is safe.
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"traceId":"(\w+)"'
+          url: '$${__value.raw}'
