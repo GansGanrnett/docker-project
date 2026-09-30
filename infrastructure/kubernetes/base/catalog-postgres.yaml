@@ -14,6 +14,27 @@ spec:
       labels:
         app: catalog-postgres
     spec:
+      # Fresh PVCs are owned by root, so the non-root postgres user cannot run
+      # initdb on them. This init container hands the data dir over to 999 and
+      # then exits; the postgres container itself stays fully unprivileged.
+      # See issue #20.
+      initContainers:
+        - name: init-data-dir
+          image: postgres:15-alpine
+          command:
+            - sh
+            - -c
+            - chown -R 999:999 /var/lib/postgresql/data && chmod 700 /var/lib/postgresql/data
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
       containers:
         - name: postgres
           image: postgres:15-alpine
