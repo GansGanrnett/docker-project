@@ -1,0 +1,7 @@
+# PostgreSQL hba-конфиги должны оставаться с LF: файл монтируется read-only
+# в контейнер postgres:15-alpine и через ConfigMap в k8s.
+infrastructure/postgres/pg_hba.conf text eol=lf
+infrastructure/kubernetes/base/pg-hba-configmap.yaml text eol=lf
+
+# Остальные конфиги — тоже текст, нормализуем переводы строк.
+*.conf text eol=lf
