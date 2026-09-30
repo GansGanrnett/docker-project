@@ -1,0 +1,272 @@
+{
+  "uid": "ecommerce-overview",
+  "title": "Ecommerce - Overview",
+  "tags": ["ecommerce", "overview"],
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "prometheus" },
+        "hide": 0
+      },
+      {
+        "name": "log_stream",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "loki" },
+        "query": "label_values(container)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Services Up",
+      "description": "Scrape target health. 9 targets: 7 app services, prometheus itself and rabbitmq.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(up{job!=\"prometheus\"})",
+          "legendFormat": "up",
+          "instant": true
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 7 },
+              { "color": "green", "value": 8 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Requests / sec (5m)",
+      "description": "Only auth-service exposes a real HTTP histogram (Spring actuator). The .NET services expose hand-rolled counters, see the note panel.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"auth-service\"}[5m]))",
+          "legendFormat": "auth-service"
+        }
+      ],
+      "options": { "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "p95 Latency (auth-service)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{job=\"auth-service\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "options": { "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "RabbitMQ Messages In Queue",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rabbitmq_queue_messages)",
+          "legendFormat": "queued"
+        }
+      ],
+      "options": { "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 100 },
+              { "color": "red", "value": 1000 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Target Health (up)",
+      "description": "1 = scrape succeeded, 0 = target down. A dip here means the service or its port is gone.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "refId": "A", "expr": "up{job!=\"prometheus\"}", "legendFormat": "{{job}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "right" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Service Uptime",
+      "description": "Container uptime from process_start_time_seconds. A flat line means a restart, not necessarily a crash - check the logs panel.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "refId": "A", "expr": "time() - process_start_time_seconds{job!=\"prometheus\"}", "legendFormat": "{{job}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "stacking": { "mode": "none" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "right" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "JVM Heap (auth-service)",
+      "description": "auth-service is the only JVM service with a real actuator endpoint. The `id` label holds G1 pool names (Eden / Old Gen / Survivor), so usage is summed per pool; the flat line is the total heap ceiling.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (id) (jvm_memory_used_bytes{job=\"auth-service\", area=\"heap\"})", "legendFormat": "{{id}}" },
+        { "refId": "B", "expr": "sum(jvm_memory_max_bytes{job=\"auth-service\", area=\"heap\"})", "legendFormat": "heap max" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "GC Pause (auth-service)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (action) (rate(jvm_gc_pause_seconds_sum{job=\"auth-service\"}[5m]))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "RabbitMQ Queue Depth",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (queue) (rabbitmq_queue_messages)", "legendFormat": "{{queue}}" },
+        { "refId": "B", "expr": "sum by (queue) (rabbitmq_queue_messages_unacked)", "legendFormat": "{{queue}} unacked" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "right" } }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "RabbitMQ Publish / Deliver Rate",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        { "refId": "A", "expr": "rate(rabbitmq_global_messages_published_total[5m])", "legendFormat": "published" },
+        { "refId": "B", "expr": "rate(rabbitmq_global_messages_delivered_total[5m])", "legendFormat": "delivered" },
+        { "refId": "C", "expr": "rate(rabbitmq_global_messages_unroutable_total[5m])", "legendFormat": "unroutable" },
+        { "refId": "D", "expr": "rate(rabbitmq_global_messages_redelivered_total[5m])", "legendFormat": "redelivered" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "right" } }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Process Resources",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        { "refId": "A", "expr": "process_resident_memory_bytes{job!=\"prometheus\"}", "legendFormat": "{{job}} rss" },
+        { "refId": "B", "expr": "rate(process_cpu_seconds_total{job!=\"prometheus\"}[5m])", "legendFormat": "{{job}} cpu" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "right" } }
+    },
+    {
+      "id": 12,
+      "type": "logs",
+      "title": "Container Logs (Loki)",
+      "description": "Streamed from Loki via promtail. Use the stream variable to filter by container.",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{container=~\"${log_stream:regex}\"}",
+          "showTime": true,
+          "wrapLogMessage": true,
+          "sortOrder": "Descending",
+          "enableLogDetails": true
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 13,
+      "type": "text",
+      "title": "Telemetry gaps in this stack",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 40 },
+      "options": { "mode": "markdown", "content": "**What is not instrumented yet** - these panels deliberately avoid it:\n\n- `order-service`, `catalog-service` expose only hand-rolled counters (`order_up`, `order_http_requests_total`, `catalog_up`, ...). No latency, no status codes, no error rate. HTTP panels cover `auth-service` only.\n- `cart-service` exposes Node.js runtime metrics (`nodejs_active_handles`) but no request latency.\n- `payment-service` exposes only process metrics - no business metrics at all.\n- `analytics-fastapi` does not answer `/metrics`; Prometheus scrapes a non-existent endpoint and reports it as up only because the port is open.\n\nTo close the gaps, add `prometheus-netstat`/`HttpMetrics` middleware to the .NET services and `prometheus-client` counters to the Python service." }
+    }
+  ]
+}
