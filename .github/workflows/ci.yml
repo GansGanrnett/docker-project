@@ -120,6 +120,19 @@ jobs:
               helm lint "$chart" || echo "Helm lint warning in $chart"
             fi
           done
+      - name: Validate K8s base manifests
+        # helm lint выше проверяет только чарты, поэтому манифесты из base/
+        # (StatefulSet, Service, ConfigMap, Secret) валидируются отдельно
+        # против схем Kubernetes. Без этого шага опечатки в spec проходили
+        # незамеченными: volumes на уровне spec вместо spec.template.spec.
+        run: |
+          docker run --rm \
+            -v "$PWD/infrastructure/kubernetes:/repo:ro" \
+            -w /repo \
+            ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary -kubernetes-version 1.29.0 \
+            -ignore-filename-pattern 'values\.yaml$' \
+            base
 
   build-services:
     name: Build & Push Docker images
