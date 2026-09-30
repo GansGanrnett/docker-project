@@ -1,0 +1,4 @@
+target/
+*.log
+.env
+src/main/resources/configs/private.pem
