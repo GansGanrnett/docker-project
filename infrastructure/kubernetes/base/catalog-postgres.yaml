@@ -33,9 +33,15 @@ spec:
                   key: catalog-db-password
             - name: POSTGRES_DB
               value: catalog_db
+          # Убираем trust для localhost: см. issue #12 и infrastructure/postgres/pg_hba.conf
+          args: ["-c", "hba_file=/etc/postgres/pg_hba.conf"]
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: pg-hba
+              mountPath: /etc/postgres/pg_hba.conf
+              subPath: pg_hba.conf
+              readOnly: true
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "catalog_user", "-d", "catalog_db"]
@@ -50,6 +56,13 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+  volumes:
+    - name: pg-hba
+      configMap:
+        name: pg-hba
+        items:
+          - key: pg_hba.conf
+            path: pg_hba.conf
   volumeClaimTemplates:
     - metadata:
         name: data
