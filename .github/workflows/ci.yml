@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - project
+      - main
   pull_request:
     branches:
       - project
+      - main
 
 env:
   REGISTRY: ghcr.io
@@ -216,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
-    if: needs.changes.outputs.scripts == 'true'
+    if: needs.changes.outputs.scripts == 'true' || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - name: Run ShellCheck
