@@ -6,6 +6,14 @@
 .env
 .env.*
 !.env.example
+*.secret
+*.pass
+*.credentials
+credentials*
+secrets.*
+.rabbitmqadmin
+.env.local
+.env.production
 
 # Сборочные артефакты
 target/
@@ -28,3 +36,7 @@ __pycache__/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Артефакты аудита
+fixes/
+/package-lock.json
