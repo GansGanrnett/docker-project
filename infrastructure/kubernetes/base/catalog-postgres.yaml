@@ -53,16 +53,16 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: pg-hba
+          configMap:
+            name: pg-hba
+            items:
+              - key: pg_hba.conf
+                path: pg_hba.conf
       securityContext:
         seccompProfile:
           type: RuntimeDefault
-  volumes:
-    - name: pg-hba
-      configMap:
-        name: pg-hba
-        items:
-          - key: pg_hba.conf
-            path: pg_hba.conf
   volumeClaimTemplates:
     - metadata:
         name: data
