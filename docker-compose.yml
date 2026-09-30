@@ -262,6 +262,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboard JSON for the file-based provider (provisioning/dashboards/dashboards.yml)
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks:
       - ecommerce-network
     depends_on:

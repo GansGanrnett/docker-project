@@ -1,0 +1,19 @@
+apiVersion: 1
+
+# Dashboard provider: loads every *.json from the mounted dashboards directory
+# on Grafana startup and keeps them in sync while the container runs.
+providers:
+  - name: ecommerce
+    orgId: 1
+    folder: Ecommerce
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    # NOTE: path/folders MUST live under `options` for Grafana 10.x.
+    # Placing `path` at provider top level leaves Options nil and the
+    # whole provisioning service aborts with "path param is not a string",
+    # which takes the container down.
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
