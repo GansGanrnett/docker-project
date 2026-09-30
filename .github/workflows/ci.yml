@@ -35,7 +35,10 @@ jobs:
         run: |
           if grep -rE --include='*.py' --include='*.js' --include='*.java' --include='*.cs' \
             -e 'Prod[A-Za-z]+Pass[0-9A-Za-z]+' \
-            -e '***REMOVED***' -e '***REMOVED***' -e '***REMOVED***' \
+            -e 'amqp://[a-zA-Z0-9_]+:[a-zA-Z0-9_]+@' \
+            -e 'mongodb(\+srv)?://[a-zA-Z0-9_]+:[^@${]+@' \
+            -e 'redis://:[a-zA-Z0-9_]+@' \
+            -e 'postgres://[a-zA-Z0-9_]+:[^@${]+@' \
             -e 'password\s*[:=]\s*["'"'"'][^"'"'"'\$]' \
             -E services/ shared/ scripts/; then
             echo "::error::Hardcoded credentials found in source code"

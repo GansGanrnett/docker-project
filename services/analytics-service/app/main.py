@@ -64,7 +64,9 @@ def health_check():
 
 
 def rabbitmq_consumer():
-    rabbit_url = os.getenv("RABBITMQ_URL", "amqp://***REMOVED***@rabbitmq:5672")
+    rabbit_url = os.getenv("RABBITMQ_URL")
+    if not rabbit_url:
+        raise RuntimeError("RABBITMQ_URL is not set")
 
     while True:
         try:
