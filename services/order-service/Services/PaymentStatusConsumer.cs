@@ -68,7 +68,10 @@ namespace OrderService.Services
                 PAYMENT_EXCHANGE, PAYMENT_QUEUE, ROUTING_PAYMENT_ALL);
         }
 
-        protected override Task ExecuteAsync(CancellationToken stoppingToken)
+        // MUST be async: BackgroundService.StartAsync awaits this method, so a
+        // synchronous blocking loop deadlocks host startup. Kestrel then never
+        // binds, the service serves no HTTP and the Prometheus target goes down.
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Р РµРєРѕРЅРЅРµРєС‚: РїСЂРё РЅРµРґРѕСЃС‚СѓРїРЅРѕРј Р±СЂРѕРєРµСЂРµ РЅР° СЃС‚Р°СЂС‚Рµ РЅРµ СѓРјРёСЂР°РµРј РјРѕР»С‡Р°, Р° Р¶РґС‘Рј
             while (!stoppingToken.IsCancellationRequested)
@@ -88,16 +91,15 @@ namespace OrderService.Services
 
                     while (!stoppingToken.IsCancellationRequested && _connection.IsOpen)
                     {
-                        Thread.Sleep(200);
+                        await Task.Delay(200, stoppingToken);
                     }
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError("[RABBITMQ-CONSUMER] Connection lost: {Message}. Reconnecting in 5s...", ex.Message);
-                    Thread.Sleep(5000);
+                    await Task.Delay(5000, stoppingToken);
                 }
             }
-            return Task.CompletedTask;
         }
 
         private async void OnMessageReceived(object? sender, BasicDeliverEventArgs ea)

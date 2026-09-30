@@ -13,5 +13,8 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app .
 
 EXPOSE 8084
-ENV ASPNETCORE_URLS=http://+:8084
+# Wildcard "+" fails to bind in this container (IPv6 loopback only, no global
+# address): KestrelServerImpl.BindAsync throws TaskCanceledException and the
+# host dies before serving. Bind the concrete IPv4 address instead.
+ENV ASPNETCORE_URLS=http://0.0.0.0:8084
 ENTRYPOINT ["dotnet", "OrderService.dll"]

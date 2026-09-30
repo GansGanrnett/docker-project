@@ -37,3 +37,6 @@ fixes/
 # Служебная конфигурация opencode
 opencode.json
 
+# Мусорный артефакт shell-вывода (см. issue #14)
+exporting
+

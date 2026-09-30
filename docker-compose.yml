@@ -21,10 +21,13 @@ services:
       POSTGRES_USER: ${AUTH_DB_USER}
       POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD}
       POSTGRES_DB: ${AUTH_DB_NAME}
+    # Убираем trust для localhost: см. issue #12 и infrastructure/postgres/pg_hba.conf
+    command: ["postgres", "-c", "hba_file=/etc/postgres/pg_hba.conf"]
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_auth_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
     networks:
       - ecommerce-network
     healthcheck:
@@ -40,10 +43,13 @@ services:
       POSTGRES_USER: ${CATALOG_DB_USER}
       POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD}
       POSTGRES_DB: ${CATALOG_DB_NAME}
+    # Убираем trust для localhost: см. issue #12 и infrastructure/postgres/pg_hba.conf
+    command: ["postgres", "-c", "hba_file=/etc/postgres/pg_hba.conf"]
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
       - postgres_catalog_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
     networks:
       - ecommerce-network
     healthcheck:
