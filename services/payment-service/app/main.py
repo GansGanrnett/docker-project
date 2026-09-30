@@ -53,8 +53,9 @@ class PaymentStatusEmitter:
 
     def _connect(self):
         if self._connection is None or self._connection.is_closed:
-            rabbitmq_url = os.getenv(
-                "RABBITMQ_URL", "amqp://***REMOVED***@rabbitmq:5672")
+            rabbitmq_url = os.getenv("RABBITMQ_URL")
+            if not rabbitmq_url:
+                raise RuntimeError("RABBITMQ_URL is not set")
             params = pika.URLParameters(rabbitmq_url)
             self._connection = pika.BlockingConnection(params)
 
