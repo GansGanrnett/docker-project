@@ -45,7 +45,9 @@ spec:
               containerPort: {{ .Values.service.port }}
               protocol: TCP
           env:
-            {{- toYaml .Values.env | nindent 12 }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
             {{- if .Values.secretEnv }}
             {{- toYaml .Values.secretEnv | nindent 12 }}
             {{- end }}
