@@ -13,6 +13,27 @@ spec:
       labels:
         app: infra-db
     spec:
+      # The mongo hostPath PV is created by kubelet as root:root 0755, but the
+      # official mongo image runs as uid 999 and cannot write to /data/db.
+      # This init container hands the directory over, exactly like the one in
+      # auth-postgres.yaml. See issue #20.
+      initContainers:
+        - name: init-mongo-data
+          image: mongo:6.0
+          command:
+            - sh
+            - -c
+            - chown -R 999:999 /data/db
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
       containers:
         # 1. Redis для Корзины (Node.js)
         - name: cart-redis
@@ -27,6 +48,9 @@ spec:
           ports:
             - containerPort: 27017
               name: mongo-port
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
 
         # 3. RabbitMQ Брокер для Асинхронного Pub/Sub контура
         - name: message-rabbitmq
@@ -35,7 +59,11 @@ spec:
             - containerPort: 5672
               name: amqp-port
             - containerPort: 15672
-              name: amqp-mgmt
+              name: rabbitmq-mgmt
+      volumes:
+        - name: mongo-data
+          persistentVolumeClaim:
+            claimName: mongodb-orders-pvc
 ---
 apiVersion: v1
 kind: Service
