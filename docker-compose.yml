@@ -261,10 +261,12 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     networks:
       - ecommerce-network
     depends_on:
       - prometheus
+      - loki
 
   loki:
     image: grafana/loki:2.9.0
