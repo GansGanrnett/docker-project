@@ -82,7 +82,11 @@ namespace OrderService.Controllers
                     Username = username,
                     Items = validatedItems,
                     TotalAmount = total,
-                    Status = "PendingPayment"
+                    // Начальный переход Created -> PaymentPending. StatusChangedAt
+                    // проставляем явно: от него reaper отсчитывает 15 минут,
+                    // и по умолчанию он был бы null.
+                    Status = OrderStatuses.PaymentPending,
+                    StatusChangedAt = DateTime.UtcNow
                 };
 
                 await _ordersCollection.InsertOneAsync(newOrder);
