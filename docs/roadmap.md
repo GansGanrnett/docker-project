@@ -67,9 +67,22 @@ localhost, и правило «order-service не ходит в Redis» не р�
 какой формулировке. Под разделён на три Deployment'а, селекторы Service'ов
 обновлены. Без этого политики были бы декоративными.
 
-Проверено на kind (все 6 подов Ready, Service'ы указывают на свои поды,
-`preflight-storage.sh` — OK), но kindnet NetworkPolicy не применяет: реальную
-изоляцию нужно проверять на кластере с Calico или Cilium.
+Проверено дважды. На kind (kindnet) все 6 подов Ready, Service'ы указывают на
+свои поды, `preflight-storage.sh` — OK; но kindnet политики не применяет, там
+проверяется только синтаксис. Поэтому изоляция проверена на kind с Calico
+v3.28.2 — пять замеров с подов-зондов, несущих метки чартов:
+
+| откуда | куда | ожидание | результат |
+| --- | --- | --- | --- |
+| `cart-service` | redis 6379 | allow | allow |
+| `order-service` | redis 6379 | block | **block** |
+| `order-service` | mongo 27017 | allow | allow |
+| `order-service` | rabbit 5672 | allow | allow |
+| `cart-service` | mongo 27017 | block | **block** |
+
+Заблокированные пары — ровно те, что запрещает политика, и только они. Это
+же доказывает необходимость разделения пода: пока Redis, MongoDB и RabbitMQ
+лежали в одном `infra-db`, третья и пятая строки не могли бы дать block.
 
 Побочно найдено и исправлено в `preflight-storage.sh`: он сравнивал
 `state` (рендерится Go-map) со строкой `terminated`, из-за чего проверка
@@ -80,7 +93,6 @@ Postgres `999:999 700`, MongoDB `999:999 755`.
 Что осталось по факту (проверено по коду):
 
 - В `base/` у StatefulSet/Deployment нет `resources.limits` (кроме `pod.yaml`).
-- Политики не проверены на enforcing-CNI (Calico/Cilium).
 
 ## Фаза 1 — Наблюдаемость
 
