@@ -78,9 +78,9 @@ env:
   - name: SPRING_DATASOURCE_USERNAME
     value: "auth_user"
   - name: JWT_PRIVATE_KEY_PATH
-    value: "/app/configs/private.pem"
+    value: /app/configs/private.pem
   - name: JWT_PUBLIC_KEY_PATH
-    value: "/app/configs/public.pem"
+    value: /app/configs/public.pem
 
 # Секретные переменные из Kubernetes Secret (значения не хранятся в чарте)
 secretEnv:
@@ -95,9 +95,38 @@ secretEnv:
         name: auth-secrets
         key: auth-admin-password
 
-# Монтирование конфигов/ключей (public.pem и т.п.) из Secret или ConfigMap
-configMounts: []
-secretMounts: []
+# Ключевая пара RS256 для подписи JWT.
+#
+# Ключи НЕ в git и НЕ в образе: private.pem попадает в .gitignore, поэтому
+# "просто закоммитить ключ" невозможно, а приложение без него падает на старте
+# (issue #33). Отсюда и этот блок: hook-job создаёт Secret при первом
+# развёртывании, Deployment монтирует его в /app/configs.
+#
+# Поведение при повторных upgrade намеренно консервативное: существующий Secret
+# не перезаписывается никогда - перегенерация инвалидирует все выпущенные
+# токены. Ротация - только ручное удаление Secret.
+jwt:
+  # Имя Secret с ключами.
+  secretName: auth-jwt-keys
+  # Куда монтируется пара в поде. Пути обязаны совпадать с JWT_*_KEY_PATH.
+  mountPath: /app/configs
+  # Размер ключа в битах (требование проекта - RSA-4096).
+  keySize: 4096
+
+  keygen:
+    # Выключать только если Secret уже создан вручную или импортирован из
+    # внешнего хранилища (Vault, External Secrets Operator).
+    enabled: true
+
+    # Одноразовый образ: в нём нет openssl и kubectl, они ставятся пакетным
+    # менеджером при запуске. Требует сети из кластера на alpine-репозитории.
+    # Альтернатива: собрать свой образ с обоими бинарями, указать его здесь и
+    # поставить packages: [] - тогда runAsUser можно вернуть на 1000.
+    image: alpine:3.19
+    packages:
+      - openssl
+      - kubectl
+    runAsUser: 0
 
 autoscaling:
   enabled: false

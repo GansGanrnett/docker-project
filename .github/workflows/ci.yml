@@ -238,6 +238,128 @@ jobs:
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: './scripts'
+      - name: Run ShellCheck on chart-embedded scripts
+        # Канонический генератор ключей лежит внутри чарта, потому что Helm
+        # не читает файлы за пределами каталога чарта, а hook-job монтирует
+        # именно его в ConfigMap. Без этого шага он не проверялся бы вовсе.
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: './infrastructure/kubernetes/helm-charts/auth-service/files'
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
+
+  check-jwt-keys:
+    name: Verify JWT key bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: >-
+      needs.changes.outputs.infrastructure == 'true' ||
+      needs.changes.outputs.services == 'true' ||
+      needs.changes.outputs.scripts == 'true' ||
+      github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Приватный ключ не отслеживается git
+        # private.pem лежит в .gitignore, но правило можно случайно сломать
+        # удалением строки. Тогда ключ уедет в историю - и оттуда его уже не
+        # вычистить без rewrite, поэтому ловим это на CI, а не в gitleaks.
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -qE '(^|/)private\.pem$'; then
+            echo "::error::private.pem отслеживается git - приватный ключ попадёт в историю"
+            exit 1
+          fi
+          echo "private.pem не отслеживается"
+
+      - name: Генератор выдаёт валидную пару и не перевыпускает ключи
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+
+          scripts/generate-jwt-keys.sh "$tmp"
+
+          # Повторный запуск обязан быть no-op. Если он перевыпустит ключи,
+          # то при каждом деплое будут инвалидироваться все выпущенные токены -
+          # самый дорогой способ сломать аутентификацию.
+          before="$(sha256sum "$tmp/private.pem")"
+          scripts/generate-jwt-keys.sh "$tmp"
+          after="$(sha256sum "$tmp/private.pem")"
+          if [ "$before" != "$after" ]; then
+            echo "::error::повторный запуск перевыпустил private.pem"
+            exit 1
+          fi
+
+          scripts/generate-jwt-keys.sh --check "$tmp"
+          echo "пара ключей валидна и генерируется один раз"
+
+      - name: Реализация генератора ровно одна
+        # Логика генерации обязана жить в единственном файле. Вторая копия
+        # разъедется с первой, и расхождение всплывёт только в кластере:
+        # локально разработчик запускал бы исправленный скрипт, а hook-job -
+        # устаревший. Поэтому проверяем не содержимое, а количество носителей
+        # самой генерации.
+        run: |
+          set -euo pipefail
+          # .github исключён намеренно: этот же шаг цитирует 'openssl genpkey'
+          # в комментарии и в проверке, и без исключения нашёл бы сам себя.
+          holders="$(grep -rl --exclude-dir=.git --exclude-dir=.github 'openssl genpkey' . | sort)"
+          count="$(printf '%s\n' "$holders" | grep -c . || true)"
+          echo "openssl genpkey встречается в:"
+          printf '%s\n' "$holders" | sed 's/^/  /'
+
+          expected='infrastructure/kubernetes/helm-charts/auth-service/files/generate-jwt-keys.sh'
+          if [ "$count" -ne 1 ]; then
+            echo "::error::генерация ключа продублирована в $count файлах - оставить можно только $expected"
+            exit 1
+          fi
+          if [ "$holders" != "./$expected" ]; then
+            echo "::error::генерация переехала в $holders, а чарт читает $expected"
+            exit 1
+          fi
+
+      - name: Скрипт реально попадает в ConfigMap
+        # .Files.Get не ходит за пределы каталога чарта: опечатка в пути даёт
+        # пустой ConfigMap, hook-job падает с "no such file", и это видно
+        # только при развёртывании.
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+
+          rendered="$(mktemp)"
+          helm template auth infrastructure/kubernetes/helm-charts/auth-service > "$rendered"
+
+          # Дефис перед именем файла обязателен: без него python3 попытался бы
+          # исполнить YAML как Python-скрипт, а не прочитать его как аргумент.
+          python3 - "$rendered" <<'PY'
+          import sys
+          import yaml
+
+          embedded = None
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              for doc in yaml.safe_load_all(fh):
+                  if doc and doc.get("kind") == "ConfigMap":
+                      data = doc.get("data") or {}
+                      if "generate-jwt-keys.sh" in data:
+                          embedded = data["generate-jwt-keys.sh"]
+                          break
+
+          if not embedded:
+              sys.exit("::error::ConfigMap со скриптом не найден в рендере чарта")
+          if "openssl genpkey" not in embedded:
+              sys.exit("::error::в ConfigMap попал не тот файл")
+
+          canon = ("infrastructure/kubernetes/helm-charts/auth-service"
+                   "/files/generate-jwt-keys.sh")
+          with open(canon, encoding="utf-8") as fh:
+              source = fh.read()
+
+          # Блочный скаляр YAML добивляет ровно один перевод строки в конце,
+          # поэтому сверяем без хвостовых - иначе сравнение врёт всегда.
+          if embedded.rstrip("\n") != source.rstrip("\n"):
+              sys.exit("::error::ConfigMap не собран из канонического скрипта")
+          PY
+
+          echo "скрипт в ConfigMap идентичен каноническому"
 
