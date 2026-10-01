@@ -1,0 +1,177 @@
+﻿{{/*
+Р“РµРЅРµСЂР°С†РёСЏ РєР»СЋС‡РµРІРѕР№ РїР°СЂС‹ RS256 РїСЂРё РїРµСЂРІРѕРј СЂР°Р·РІС‘СЂС‚С‹РІР°РЅРёРё (issue #33).
+
+РџРѕС‡РµРјСѓ РѕС‚РґРµР»СЊРЅС‹Р№ hook-job, Р° РЅРµ initContainer РїРѕРґР°:
+
+  1. initContainer РІС‹РїРѕР»РЅСЏРµС‚СЃСЏ РїСЂРё РєР°Р¶РґРѕРј СЃС‚Р°СЂС‚Рµ РїРѕРґР°. РџСЂРё replicaCount > 1 РґРІР°
+     РїРѕРґР° СЃРіРµРЅРµСЂРёСЂРѕРІР°Р»Рё Р±С‹ Р”Р’Р• СЂР°Р·РЅС‹Рµ РїР°СЂС‹: С‚РѕРєРµРЅ, РїРѕРґРїРёСЃР°РЅРЅС‹Р№ СЂРµРїР»РёРєРѕР№ A, РЅРµ
+     РїСЂРѕС…РѕРґРёС‚ РїСЂРѕРІРµСЂРєСѓ РЅР° СЂРµРїР»РёРєРµ B.
+  2. initContainer РЅРµ СѓРјРµРµС‚ РґРѕР·Р°РїРѕР»РЅРёС‚СЊ СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ Secret, С‚Рѕ РµСЃС‚СЊ РЅРµ
+     Р·Р°РєСЂС‹РІР°РµС‚ СЃС†РµРЅР°СЂРёР№ "СЃРµРєСЂРµС‚ РїРѕС‚РµСЂСЏР»СЃСЏ, РґРµРїР»РѕР№ РЅРµ РїСЂРѕС…РѕРґРёС‚".
+  3. Hook СЃСЂР°Р±Р°С‚С‹РІР°РµС‚ РѕРґРёРЅ СЂР°Р· РЅР° install/upgrade, РїРѕР»СѓС‡Р°РµС‚ СѓР·РєРёР№ Role Рё
+     СѓРґР°Р»СЏРµС‚ СЃРµР±СЏ РїРѕСЃР»Рµ СѓСЃРїРµС…Р° (hook-succeeded).
+
+РРґРµРјРїРѕС‚РµРЅС‚РЅРѕСЃС‚СЊ РґРµСЂР¶РёС‚ СЃР°Рј СЃРєСЂРёРїС‚ РёР· files/: СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ РІР°Р»РёРґРЅС‹Р№ Secret
+РѕСЃС‚Р°С‘С‚СЃСЏ РЅРµС‚СЂРѕРЅСѓС‚С‹Рј. РџРµСЂРµРіРµРЅРµСЂР°С†РёСЏ РєР»СЋС‡РµР№ РЅРµРґРѕРїСѓСЃС‚РёРјР° - РѕРЅР° РёРЅРІР°Р»РёРґРёСЂСѓРµС‚ РІСЃРµ
+РІС‹РїСѓС‰РµРЅРЅС‹Рµ С‚РѕРєРµРЅС‹.
+*/}}
+{{- if .Values.jwt.keygen.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "auth-service.fullname" . }}-keygen-script
+  labels:
+    {{- include "auth-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-30"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+  generate-jwt-keys.sh: |
+{{ .Files.Get "files/generate-jwt-keys.sh" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "auth-service.fullname" . }}-keygen
+  labels:
+    {{- include "auth-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "auth-service.fullname" . }}-keygen
+  labels:
+    {{- include "auth-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  # Р РѕРІРЅРѕ С‚Рѕ, С‡С‚Рѕ РЅСѓР¶РЅРѕ РґР»СЏ "СЃРѕР·РґР°С‚СЊ Secret, РµСЃР»Рё РµРіРѕ РЅРµС‚": РїСЂРѕС‡РёС‚Р°С‚СЊ, СЃРѕР·РґР°С‚СЊ,
+  # РґРѕР·Р°РїРёСЃР°С‚СЊ. РЈРґР°Р»РµРЅРёРµ Рё list РЅР°РјРµСЂРµРЅРЅРѕ РЅРµ РІС‹РґР°РЅС‹ - job РЅРµ РґРѕР»Р¶РµРЅ СѓРјРµС‚СЊ РЅРё
+  # СЃС‚РµСЂРµС‚СЊ РєР»СЋС‡Рё, РЅРё РїРµСЂРµС‡РёСЃР»РёС‚СЊ С‡СѓР¶РёРµ СЃРµРєСЂРµС‚С‹ namespace.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "auth-service.fullname" . }}-keygen
+  labels:
+    {{- include "auth-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "auth-service.fullname" . }}-keygen
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "auth-service.fullname" . }}-keygen
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "auth-service.fullname" . }}-keygen
+  labels:
+    {{- include "auth-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "auth-service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: keygen
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "auth-service.fullname" . }}-keygen
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: keygen
+          image: {{ .Values.jwt.keygen.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # Root - РѕСЃРѕР·РЅР°РЅРЅС‹Р№ РєРѕРјРїСЂРѕРјРёСЃСЃ СЂР°РґРё "apk add": openssl Рё kubectl РЅСѓР¶РЅС‹
+            # РІ РѕРґРЅРѕСЂР°Р·РѕРІРѕРј РѕР±СЂР°Р·Рµ, Р° РёС… СѓСЃС‚Р°РЅРѕРІРєР° С‚СЂРµР±СѓРµС‚ Р·Р°РїРёСЃРё РІ /etc/apk.
+            # РџРѕРґ hook СЃ Role С‚РѕР»СЊРєРѕ РЅР° secrets СЌС‚Рѕ РїСЂРёРµРјР»РµРјРѕ. Р•СЃР»Рё РѕР±СЂР°Р·
+            # РїРµСЂРµРѕРїР»С‘РЅ РЅР° РіРѕС‚РѕРІС‹Р№ СЃ РѕР±РѕРёРјРё Р±РёРЅР°СЂСЏРјРё, РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РїРѕСЃС‚Р°РІРёС‚СЊ
+            # jwt.keygen.packages: [] Рё runAsUser: 1000 РІ values.yaml.
+            runAsUser: {{ .Values.jwt.keygen.runAsUser }}
+          env:
+            - name: JWT_SECRET_NAME
+              value: {{ .Values.jwt.secretName | quote }}
+            - name: JWT_KEY_SIZE
+              value: {{ .Values.jwt.keySize | quote }}
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: keygen-script
+              mountPath: /opt/keygen
+              readOnly: true
+            - name: work
+              mountPath: /work
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              # --- 1. Р‘РёРЅР°СЂРёРё ------------------------------------------------------
+              # openssl - РіРµРЅРµСЂР°С†РёСЏ РїР°СЂС‹, kubectl - Р·Р°РїРёСЃСЊ РІ Secret.
+              if ! command -v openssl >/dev/null 2>&1 || ! command -v kubectl >/dev/null 2>&1; then
+              {{- if .Values.jwt.keygen.packages }}
+                echo "[keygen] installing: {{ .Values.jwt.keygen.packages | join " " }}"
+                apk add --no-cache {{ .Values.jwt.keygen.packages | join " " }} >/dev/null
+              {{- else }}
+                echo "[keygen] openssl Рё/РёР»Рё kubectl РЅРµ РЅР°Р№РґРµРЅС‹, Р° РїР°РєРµС‚С‹ РЅРµ Р·Р°РґР°РЅС‹" >&2
+                exit 1
+              {{- end }}
+              fi
+
+              # --- 2. РЎСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ Secret РЅРµ С‚СЂРѕРіР°РµРј ------------------------------
+              # РџСЂРѕРІРµСЂСЏРµРј Р”Рћ РіРµРЅРµСЂР°С†РёРё: RSA-4096 РЅР° РєР°Р¶РґРѕРј upgrade - СЌС‚Рѕ Р»РёС€РЅРёРµ
+              # СЃРµРєСѓРЅРґС‹ CPU СЂР°РґРё СЂРµР·СѓР»СЊС‚Р°С‚Р°, РєРѕС‚РѕСЂС‹Р№ РІСЃС‘ СЂР°РІРЅРѕ Р±СѓРґРµС‚ РІС‹Р±СЂРѕС€РµРЅ.
+              if kubectl get secret "$JWT_SECRET_NAME" -n "$KUBERNETES_NAMESPACE" >/dev/null 2>&1; then
+                echo "[keygen] secret $JWT_SECRET_NAME СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚, РєР»СЋС‡Рё РЅРµ С‚СЂРѕРіР°РµРј"
+                exit 0
+              fi
+
+              # --- 3. Р“РµРЅРµСЂР°С†РёСЏ ---------------------------------------------------
+              # РЎРєСЂРёРїС‚ РїСЂРёС…РѕРґРёС‚ РёР· ConfigMap, С‚Рѕ РµСЃС‚СЊ СЌС‚Рѕ Р±СѓРєРІР°Р»СЊРЅРѕ С‚РѕС‚ Р¶Рµ РєРѕРґ,
+              # РєРѕС‚РѕСЂС‹Р№ СЂР°Р·СЂР°Р±РѕС‚С‡РёРє Р·Р°РїСѓСЃРєР°РµС‚ Р»РѕРєР°Р»СЊРЅРѕ С‡РµСЂРµР· scripts/generate-jwt-keys.sh.
+              sh /opt/keygen/generate-jwt-keys.sh /work
+
+              # --- 4. Secret ------------------------------------------------------
+              kubectl create secret generic "$JWT_SECRET_NAME" \
+                -n "$KUBERNETES_NAMESPACE" \
+                --from-file=private.pem=/work/private.pem \
+                --from-file=public.pem=/work/public.pem
+
+              echo "[keygen] СЃРѕР·РґР°РЅ secret $JWT_SECRET_NAME (RSA-${JWT_KEY_SIZE})"
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: keygen-script
+          configMap:
+            name: {{ include "auth-service.fullname" . }}-keygen-script
+            defaultMode: 0444
+{{- end }}

@@ -61,13 +61,29 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.volumeMounts }}
+          {{- if or .Values.jwt.keygen.enabled .Values.volumeMounts }}
           volumeMounts:
+            {{- if .Values.jwt.keygen.enabled }}
+            # Ключи RS256. readOnly идёт в паре с readOnlyRootFilesystem выше:
+            # под не пишет ничего в /app/configs, только читает пару.
+            - name: jwt-keys
+              mountPath: {{ .Values.jwt.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
-      {{- with .Values.volumes }}
+      {{- if or .Values.jwt.keygen.enabled .Values.volumes }}
       volumes:
+        {{- if .Values.jwt.keygen.enabled }}
+        - name: jwt-keys
+          secret:
+            secretName: {{ .Values.jwt.secretName }}
+        {{- end }}
+        {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
