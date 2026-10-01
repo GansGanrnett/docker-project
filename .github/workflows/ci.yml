@@ -183,6 +183,51 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  trivy-scan:
+    name: Trivy image scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - auth-service
+          - catalog-service
+          - cart-service
+          - order-service
+          - payment-service
+          - api-gateway
+          - analytics-service
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # Собираем образ локально: сканируем финальный артефакт, а не исходники.
+      # Интересуют CVE в базовом слое и в зависимостях, попавших в image.
+      - name: Build ${{ matrix.service }} image
+        run: |
+          docker build \
+            --tag "local/${{ matrix.service }}:scan" \
+            ./services/${{ matrix.service }}
+
+      # Гейт по CRITICAL. HIGH сейчас не блокирует: на момент включения
+      # сканирования в базовых образах было 147 HIGH (Go 1.21, Node 20,
+      # Alpine 3.19, Python 3.10) и любая блокировка валила бы каждый PR.
+      # Долг по HIGH вынесен в дорожную карту; известные CRITICAL закрыты
+      # baseline'ом .trivyignore, новые - роняют сборку.
+      - name: Scan ${{ matrix.service }} with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: local/${{ matrix.service }}:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          exit-code: '1'
+
   run-tests:
     name: Run Unit Tests
     runs-on: ubuntu-latest

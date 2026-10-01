@@ -1,17 +1,58 @@
+# Инфраструктурные хранилища разделены на отдельные Deployment'ы намеренно.
+#
+# Раньше Redis, MongoDB и RabbitMQ жили в одном поде `infra-db`. NetworkPolicy
+# работает на уровне пода, поэтому для такого пода политика не может быть
+# раздельной: контейнеры всё равно видят друг друга по localhost, и правило
+# "order-service не ходит в Redis" технически невыполнимо. Разделение делает
+# изоляцию настоящей, а не декоративной. Селекторы Service'ов обновлены
+# под новые метки.
+#
+# Картина меток у приложений задана чартами: app.kubernetes.io/name=<service>,
+# app.kubernetes.io/instance=<Release.Name>. Используем её же, чтобы
+# NetworkPolicy мог адресовать клиентов.
+
+# 1. Redis для Корзины (Node.js)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: infrastructure-databases
+  name: cart-redis
   namespace: default
+  labels:
+    app: cart-redis
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: infra-db
+      app: cart-redis
   template:
     metadata:
       labels:
-        app: infra-db
+        app: cart-redis
+    spec:
+      containers:
+        - name: cart-redis
+          image: redis:7.0-alpine
+          ports:
+            - containerPort: 6379
+              name: redis-port
+---
+# 2. MongoDB для Заказов (.NET 8)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-mongodb
+  namespace: default
+  labels:
+    app: order-mongodb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-mongodb
+  template:
+    metadata:
+      labels:
+        app: order-mongodb
     spec:
       # The mongo hostPath PV is created by kubelet as root:root 0755, but the
       # official mongo image runs as uid 999 and cannot write to /data/db.
@@ -35,14 +76,6 @@ spec:
               drop: ["ALL"]
               add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
       containers:
-        # 1. Redis для Корзины (Node.js)
-        - name: cart-redis
-          image: redis:7.0-alpine
-          ports:
-            - containerPort: 6379
-              name: redis-port
-              
-        # 2. MongoDB для Заказов (.NET 8)
         - name: order-mongodb
           image: mongo:6.0
           ports:
@@ -51,8 +84,30 @@ spec:
           volumeMounts:
             - name: mongo-data
               mountPath: /data/db
-
-        # 3. RabbitMQ Брокер для Асинхронного Pub/Sub контура
+      volumes:
+        - name: mongo-data
+          persistentVolumeClaim:
+            claimName: mongodb-orders-pvc
+---
+# 3. RabbitMQ Брокер для Асинхронного Pub/Sub контура
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: message-rabbitmq
+  namespace: default
+  labels:
+    app: message-rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: message-rabbitmq
+  template:
+    metadata:
+      labels:
+        app: message-rabbitmq
+    spec:
+      containers:
         - name: message-rabbitmq
           image: rabbitmq:3.12-management-alpine
           ports:
@@ -60,10 +115,6 @@ spec:
               name: amqp-port
             - containerPort: 15672
               name: rabbitmq-mgmt
-      volumes:
-        - name: mongo-data
-          persistentVolumeClaim:
-            claimName: mongodb-orders-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -74,7 +125,7 @@ spec:
     - port: 6379
       targetPort: redis-port
   selector:
-    app: infra-db
+    app: cart-redis
 ---
 apiVersion: v1
 kind: Service
@@ -85,7 +136,7 @@ spec:
     - port: 27017
       targetPort: mongo-port
   selector:
-    app: infra-db
+    app: order-mongodb
 ---
 apiVersion: v1
 kind: Service
@@ -96,4 +147,4 @@ spec:
     - port: 5672
       targetPort: amqp-port
   selector:
-    app: infra-db
+    app: message-rabbitmq

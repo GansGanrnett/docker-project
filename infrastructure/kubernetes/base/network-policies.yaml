@@ -1,0 +1,203 @@
+# Network Policies для манифестов из base/.
+#
+# Покрыта каждая нагрузка из этого каталога. Логика простая: под попадает под
+# политику - весь ingress, кроме перечисленного, закрыт. Поэтому глобальный
+# default-deny здесь не нужен и не добавляется: пока не у всех подов в кластере
+# есть политика, он рискует обрезать легитимный трафик (например, подов
+# system-пространств имен).
+#
+# ВАЖНО про проверку: политики применяются только сетевым плагином, который
+# их поддерживает. kindnet - CNI по умолчанию в kind - NetworkPolicy
+# игнорирует: kubectl apply пройдёт, но ограничения работать не будут.
+# Изоляция проверена на kind с Calico v3.28.2 пятью замерами с подов-зондов,
+# несущих метки чартов: разрешённые пары соединяются, чужие блокируются.
+# На kindnet эти манифесты служат проверкой синтаксиса и схемы (kubeconform).
+#
+# Клиенты адресуются по меткам, которые задают helm-чарты:
+#   app.kubernetes.io/name=<service>, app.kubernetes.io/instance=<Release.Name>
+# Зависит только от app.kubernetes.io/name, чтобы политика пережила
+# переустановку релиза с другим именем.
+#
+# Предполагается, что приложения тоже работают в кластере: разрешённые
+# клиенты - это поды. Если сервисы запущены на хосте (docker-compose),
+# сетевой плагин может срезать их обращения к базам. Для связки "приложения
+# в docker-compose, только базы в k8s" эти политики применять нельзя.
+#
+# Случай валидации (validation-pod) закрыт полностью: команда `echo validation`
+# сети не требует.
+
+# --- Базы данных: доступ только у своего сервиса
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-postgres-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: auth-postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: auth-service
+      ports:
+        - protocol: TCP
+          port: 5432
+  egress:
+    # Только DNS: наружу auth-postgres не ходит.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: catalog-postgres-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: catalog-postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: catalog-service
+      ports:
+        - protocol: TCP
+          port: 5432
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: order-mongodb-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: order-mongodb
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: order-service
+      ports:
+        - protocol: TCP
+          port: 27017
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cart-redis-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: cart-redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cart-service
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# --- Брокер: AMQP от трёх потребителей, management UI - только от мониторинга
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: message-rabbitmq-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: message-rabbitmq
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # AMQP 5672: order-service (публикация), payment-service и
+    # analytics-service (потребление).
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: order-service
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: payment-service
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: analytics-service
+      ports:
+        - protocol: TCP
+          port: 5672
+    # Management UI 15672: сегодня в namespace нет ни одного пода с такой
+    # меткой, то есть UI недоступен изнутри кластера. Когда Prometheus и
+    # Grafana переедут из docker-compose в k8s, им ставится метка
+    # monitoring=true - и правило начнёт работать без правок.
+    - from:
+        - podSelector:
+            matchLabels:
+              monitoring: "true"
+      ports:
+        - protocol: TCP
+          port: 15672
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# --- Служебный под: сеть не нужна полностью
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: validation-pod-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: validation
+  policyTypes:
+    - Ingress
+    - Egress
+  # Пустые списки ingress/egress означают «запрещено всё».
