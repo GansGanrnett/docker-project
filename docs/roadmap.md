@@ -19,7 +19,7 @@ Progress не выносятся.
 | # | Задача | Статус | Где смотреть |
 | --- | --- | --- | --- |
 | 0.1 | Trivy: сканирование Docker-образов на CVE в CI | готово | `ci.yml`, `.trivyignore` |
-| 0.2 | Pre-commit hooks: gitleaks + detect-private-key | план | — |
+| 0.2 | Pre-commit hooks: gitleaks + detect-private-key | готово | `.pre-commit-config.yaml` |
 | 0.3 | Обновление actions до Node.js 24 | готово | `65783a7`, `ci.yml` |
 | 0.4 | Pod Security + Resource Limits в helm-чартах | готово | все 7 чартов |
 | 0.5 | Network Policies в k8s-манифестах | частично | чарты — да, `base/` — план |
@@ -37,9 +37,23 @@ Trivy встроен в CI отдельным джобом `trivy-scan` с ма�
 
 Долг по HIGH и обновление базовых образов — задача 2.6 (фаза 2).
 
+### Как закрыт 0.2
+
+Хуки закрывают утечку до коммита, а не на PR — в CI гitleaks срабатывает,
+когда секрет уже в истории ветки.
+
+Состав намеренно узкий: `detect-private-key`, `gitleaks`,
+`check-added-large-files`, `check-merge-conflict`. Проверки форматирования
+и `check-yaml` не включены: первая задача переформатировала бы ~25 файлов,
+вторая спотыкается на helm-шаблонах, которые валидирует `helm lint` в CI.
+
+`JwtConfig.java` исключён из `detect-private-key`: файл содержит строки
+заголовков PEM для их вырезания, но не ключ, а хук реагирует на заголовок.
+
+Установка: `make install-hooks`, проверка ветки целиком: `make pre-commit-run`.
+
 Что осталось по факту (проверено по коду):
 
-- Нет `.pre-commit-config.yaml`; gitleaks гоняется только в CI, не локально.
 - В `base/` нет ни одного NetworkPolicy (Postgres ×2, Redis, Mongo, RabbitMQ).
 - В `base/` у StatefulSet/Deployment нет `resources.limits` (кроме `pod.yaml`).
 
