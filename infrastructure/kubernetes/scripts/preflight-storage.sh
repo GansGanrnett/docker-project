@@ -95,23 +95,45 @@ done
 echo
 echo "==> pod ownership of the data directory"
 # Confirms the init containers actually ran and chowned the mount.
-if kubectl -n "$NAMESPACE" get pod -l app=auth-postgres >/dev/null 2>&1; then
-  pod="$(kubectl -n "$NAMESPACE" get pod -l app=auth-postgres -o jsonpath='{.items[0].metadata.name}')"
-  init_state="$(kubectl -n "$NAMESPACE" get pod "$pod" \
-                 -o jsonpath='{.status.initContainerStatuses[?(@.name=="init-data-dir")].state}')"
-  if [ "$init_state" = "terminated" ]; then
-    green "    init-data-dir on $pod: completed"
-    stat="$(kubectl -n "$NAMESPACE" exec "$pod" -c postgres -- stat -c '%u:%g %a' /var/lib/postgresql/data 2>/dev/null || echo '?')"
-    case "$stat" in
-      999:999*) green "    /var/lib/postgresql/data owned by $stat" ;;
-      *)        yellow "    WARN: /var/lib/postgresql/data owned by $stat (expected 999:999)" ;;
-    esac
-  else
-    yellow "    init-data-dir on $pod has not completed yet"
+#
+# The reason is read from `state.terminated.reason`, NOT from `state`.
+# `state` alone renders as a Go map
+# (map[terminated:map[exitCode:0 reason:Completed ...]]), so comparing it to
+# the string "terminated" is never true: the branch below silently never ran
+# and the ownership stat - the entire point of this check - was never made.
+check_init() {
+  local sel="$1" cname="$2" container="$3" path="$4"
+
+  if ! kubectl -n "$NAMESPACE" get pod -l "app=$sel" >/dev/null 2>&1; then
+    yellow "    $sel pod not created yet"
+    return
   fi
-else
-  yellow "    auth-postgres pod not created yet"
-fi
+
+  local pod
+  pod="$(kubectl -n "$NAMESPACE" get pod -l "app=$sel" -o jsonpath='{.items[0].metadata.name}')"
+
+  local reason
+  reason="$(kubectl -n "$NAMESPACE" get pod "$pod" \
+              -o jsonpath="{.status.initContainerStatuses[?(@.name==\"$cname\")].state.terminated.reason}")"
+  if [ "$reason" != "Completed" ]; then
+    yellow "    $cname on $pod: ${reason:-not completed yet}"
+    return
+  fi
+  green "    $cname on $pod: completed"
+
+  local owner
+  owner="$(kubectl -n "$NAMESPACE" exec "$pod" -c "$container" \
+             -- stat -c '%u:%g %a' "$path" 2>/dev/null || echo '?')"
+  case "$owner" in
+    999:999*) green "    $path owned by $owner" ;;
+    *)        yellow "    WARN: $path owned by $owner (expected 999:999)" ;;
+  esac
+}
+
+# Postgres (StatefulSet) and MongoDB (own Deployment since the infra-db pod
+# was split) both chown a hostPath mount to uid 999, so both are verified.
+check_init auth-postgres init-data-dir  postgres       /var/lib/postgresql/data
+check_init order-mongodb  init-mongo-data order-mongodb /data/db
 
 echo
 if [ "$fail" -eq 0 ]; then

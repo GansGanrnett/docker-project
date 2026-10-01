@@ -22,7 +22,7 @@ Progress не выносятся.
 | 0.2 | Pre-commit hooks: gitleaks + detect-private-key | готово | `.pre-commit-config.yaml` |
 | 0.3 | Обновление actions до Node.js 24 | готово | `65783a7`, `ci.yml` |
 | 0.4 | Pod Security + Resource Limits в helm-чартах | готово | все 7 чартов |
-| 0.5 | Network Policies в k8s-манифестах | частично | чарты — да, `base/` — план |
+| 0.5 | Network Policies в k8s-манифестах | готово | `base/network-policies.yaml` |
 
 Связанные закрытые issue: #14 (приватные ключи в истории git), #12 (pg_hba.conf trust).
 
@@ -32,8 +32,10 @@ Trivy встроен в CI отдельным джобом `trivy-scan` с ма�
 Образ собирается локально в раннере и сканируется как финальный артефакт,
 а не исходник. Гейт по `CRITICAL` с `exit-code: 1`; `HIGH` пока не блокирует.
 
-Известные уязвимости закрыты baseline'ом `.trivyignore` — 11 CRITICAL,
-все в базовых образах, не в коде сервисов. Новые CRITICAL роняют сборку.
+Известные уязвимости закрыты baseline'ом `.trivyignore` — 10 уникальных
+CRITICAL (11 срабатываний: `cart-service` и `api-gateway` делят один CVE) и
+135 HIGH, все в базовых образах, не в коде сервисов. Новые CRITICAL роняют
+сборку.
 
 Долг по HIGH и обновление базовых образов — задача 2.6 (фаза 2).
 
@@ -52,10 +54,33 @@ Trivy встроен в CI отдельным джобом `trivy-scan` с ма�
 
 Установка: `make install-hooks`, проверка ветки целиком: `make pre-commit-run`.
 
+### Как закрыт 0.5
+
+Чарты были закрыты раньше; в `base/` добавлен `network-policies.yaml` на все
+пять нагрузок. Каждая хранилище получает ingress ровно от своего сервиса,
+egress ограничен DNS, `validation-pod` закрыт полностью.
+
+Главное изменение попутно: Redis, MongoDB и RabbitMQ жили в одном поде
+`infra-db`. NetworkPolicy работает на уровне пода, поэтому для такого пода
+раздельная политика технически невыполнима — контейнеры видят друг друга по
+localhost, и правило «order-service не ходит в Redis» не работает ни при
+какой формулировке. Под разделён на три Deployment'а, селекторы Service'ов
+обновлены. Без этого политики были бы декоративными.
+
+Проверено на kind (все 6 подов Ready, Service'ы указывают на свои поды,
+`preflight-storage.sh` — OK), но kindnet NetworkPolicy не применяет: реальную
+изоляцию нужно проверять на кластере с Calico или Cilium.
+
+Побочно найдено и исправлено в `preflight-storage.sh`: он сравнивал
+`state` (рендерится Go-map) со строкой `terminated`, из-за чего проверка
+владельца каталога не выполнялась никогда. Теперь читается
+`state.terminated.reason`, и скрипт проверяет оба hostPath-каталога:
+Postgres `999:999 700`, MongoDB `999:999 755`.
+
 Что осталось по факту (проверено по коду):
 
-- В `base/` нет ни одного NetworkPolicy (Postgres ×2, Redis, Mongo, RabbitMQ).
 - В `base/` у StatefulSet/Deployment нет `resources.limits` (кроме `pod.yaml`).
+- Политики не проверены на enforcing-CNI (Calico/Cilium).
 
 ## Фаза 1 — Наблюдаемость
 
