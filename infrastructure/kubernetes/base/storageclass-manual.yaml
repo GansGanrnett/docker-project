@@ -1,20 +1,22 @@
 # StorageClass referenced by storage-volumes.yaml, auth-postgres.yaml and
 # catalog-postgres.yaml via `storageClassName: manual`.
 #
-# The name `manual` is intentional and the resource is listed first in
-# kustomization/apply order: the PersistentVolumes in storage-volumes.yaml are
-# bound from hostPath directories rather than dynamically provisioned, so a
-# class must exist before any claim can reference it.
+# `provisioner: kubernetes.io/no-provisioner` makes this a genuinely static
+# class: claims are served only by the pre-created PersistentVolumes in
+# storage-volumes.yaml, and a claim with no matching PV stays Pending forever.
 #
-# `provisioner` is required by the API schema even for manual binding, so this
-# class points at local-path. Claims that match a pre-created PersistentVolume
-# (as storage-volumes.yaml does) never invoke the provisioner - it is there to
-# satisfy validation, not to create volumes.
+# This deliberately replaces `rancher.io/local-path`. With a real provisioner,
+# "manual" was a lie: any claim that did not match a static PV was silently
+# given a dynamically provisioned local-path directory instead of failing. That
+# is what let data end up on undocumented paths, and (combined with the missing
+# claimRefs) what let RabbitMQ and auth-postgres swap directories. A loud
+# Pending claim is the correct outcome - it is visible and blocks the rollout,
+# whereas a dynamic volume looks healthy and put the database somewhere nobody
+# expected.
 #
-# Before applying, create the backing directories on every node that will host
-# a database:
-#   sudo mkdir -p /mnt/data/{postgres-auth,postgres-catalog,order-mongodb,redis,rabbitmq}
-#   sudo chown -R 999:999 /mnt/data/postgres-auth /mnt/data/postgres-catalog
+# `volumeBindingMode: WaitForFirstConsumer` stays: the volumes are node-local
+# hostPath directories, so the scheduler must pick the node before the claim is
+# bound. Keep it in sync with the two StatefulSets, which rely on this class.
 #
 # `reclaimPolicy: Retain` keeps hostPath data on PVC deletion - the default
 # `Delete` would orphan the directory contents and silently lose the database.
@@ -22,6 +24,6 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: manual
-provisioner: rancher.io/local-path
+provisioner: kubernetes.io/no-provisioner
 reclaimPolicy: Retain
 volumeBindingMode: WaitForFirstConsumer
