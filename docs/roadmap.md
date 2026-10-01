@@ -18,7 +18,7 @@ Progress не выносятся.
 
 | # | Задача | Статус | Где смотреть |
 | --- | --- | --- | --- |
-| 0.1 | Trivy: сканирование Docker-образов на CVE в CI | план | `.github/workflows/ci.yml` |
+| 0.1 | Trivy: сканирование Docker-образов на CVE в CI | готово | `ci.yml`, `.trivyignore` |
 | 0.2 | Pre-commit hooks: gitleaks + detect-private-key | план | — |
 | 0.3 | Обновление actions до Node.js 24 | готово | `65783a7`, `ci.yml` |
 | 0.4 | Pod Security + Resource Limits в helm-чартах | готово | все 7 чартов |
@@ -26,9 +26,19 @@ Progress не выносятся.
 
 Связанные закрытые issue: #14 (приватные ключи в истории git), #12 (pg_hba.conf trust).
 
+### Как закрыт 0.1
+
+Trivy встроен в CI отдельным джобом `trivy-scan` с матрицей по всем 7 сервисам.
+Образ собирается локально в раннере и сканируется как финальный артефакт,
+а не исходник. Гейт по `CRITICAL` с `exit-code: 1`; `HIGH` пока не блокирует.
+
+Известные уязвимости закрыты baseline'ом `.trivyignore` — 11 CRITICAL,
+все в базовых образах, не в коде сервисов. Новые CRITICAL роняют сборку.
+
+Долг по HIGH и обновление базовых образов — задача 2.6 (фаза 2).
+
 Что осталось по факту (проверено по коду):
 
-- Trivy в CI отсутствует, образам в `build-services` ничего не сканирует.
 - Нет `.pre-commit-config.yaml`; gitleaks гоняется только в CI, не локально.
 - В `base/` нет ни одного NetworkPolicy (Postgres ×2, Redis, Mongo, RabbitMQ).
 - В `base/` у StatefulSet/Deployment нет `resources.limits` (кроме `pod.yaml`).
@@ -52,6 +62,7 @@ Progress не выносятся.
 | 2.3 | HPA + PodDisruptionBudget | план |
 | 2.4 | Пробы liveness/readiness во всех сервисах | готово |
 | 2.5 | Chaos-тесты на отказ зависимости | план |
+| 2.6 | Обновить базовые образы и закрыть HIGH из baseline | план |
 
 Связанная закрытая issue: #20 (crash-loop Postgres на свежем PVC).
 
