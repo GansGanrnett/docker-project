@@ -30,6 +30,8 @@ jobs:
           fetch-depth: 0
       - name: Scan for secrets with Gitleaks
         uses: gitleaks/gitleaks-action@v3.0.0
+        with:
+          config: .gitleaks.toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
