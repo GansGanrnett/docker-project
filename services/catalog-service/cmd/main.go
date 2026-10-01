@@ -2,12 +2,13 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Product struct {
@@ -17,40 +18,33 @@ type Product struct {
 	Price       float64 `json:"price"`
 }
 
-var (
-	requestsTotal int64
-	startTime     = time.Now()
-)
+var startTime = time.Now()
 
-func metricsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "# HELP catalog_http_requests_total Total HTTP requests.\n")
-	fmt.Fprintf(w, "# TYPE catalog_http_requests_total counter\n")
-	fmt.Fprintf(w, "catalog_http_requests_total %d\n", atomic.LoadInt64(&requestsTotal))
-	fmt.Fprintf(w, "# HELP catalog_up Is the catalog service up.\n")
-	fmt.Fprintf(w, "# TYPE catalog_up gauge\n")
-	fmt.Fprintf(w, "catalog_up 1\n")
-	fmt.Fprintf(w, "# HELP catalog_uptime_seconds Service uptime.\n")
-	fmt.Fprintf(w, "# TYPE catalog_uptime_seconds gauge\n")
-	fmt.Fprintf(w, "catalog_uptime_seconds %.0f\n", time.Since(startTime).Seconds())
+func init() {
+	// promhttp.Handler() already exposes the default Go collector and the
+	// process collector (go_*, process_*), so only service-level gauges are
+	// added here.
+	prometheus.MustRegister(
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "catalog_up",
+			Help: "Is the catalog service up.",
+		}, func() float64 { return 1 }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "catalog_uptime_seconds",
+			Help: "Service uptime.",
+		}, func() float64 { return time.Since(startTime).Seconds() }),
+	)
 }
 
-func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8082"
-	}
+func newMux() *http.ServeMux {
+	mux := http.NewServeMux()
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&requestsTotal, 1)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"UP","service":"catalog-service"}`))
 	})
 
-	http.HandleFunc("/metrics", metricsHandler)
-
-	http.HandleFunc("/products", func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&requestsTotal, 1)
+	mux.HandleFunc("/products", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		products := []Product{
 			{ID: 1, Name: "Смартфон Apple iPhone", Description: "Флагманский телефон из контейнера Go", Price: 999.99},
@@ -59,8 +53,49 @@ func main() {
 		json.NewEncoder(w).Encode(products)
 	})
 
+	return mux
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8082"
+	}
+
+	// Real latency + status-code metrics, replacing the hardcoded stub that
+	// always reported catalog_http_requests_total 0 / catalog_up 1.
+	// Label names are fixed by promhttp: only "code" and "method" are allowed.
+	inFlight := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "http_requests_in_progress",
+		Help: "Current number of HTTP requests being served.",
+	})
+	requestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total number of HTTP requests processed.",
+	}, []string{"code", "method"})
+	requestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "http_request_duration_seconds",
+		Help:    "HTTP request latencies in seconds.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"code", "method"})
+	prometheus.MustRegister(inFlight, requestsTotal, requestDuration)
+
+	instrumented := promhttp.InstrumentHandlerDuration(
+		requestDuration,
+		promhttp.InstrumentHandlerCounter(
+			requestsTotal,
+			promhttp.InstrumentHandlerInFlight(inFlight, newMux()),
+		),
+	)
+
+	// /metrics is mounted outside the instrumented mux so that a scrape does
+	// not inflate the very counters and histograms it is about to report.
+	root := http.NewServeMux()
+	root.Handle("/metrics", promhttp.Handler())
+	root.Handle("/", instrumented)
+
 	log.Printf("=== Clean Go Catalog Service successfully started on port %s ===", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	if err := http.ListenAndServe(":"+port, root); err != nil {
 		log.Fatalf("Fatal: Failed to start server: %v", err)
 	}
 }
