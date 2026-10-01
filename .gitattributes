@@ -5,3 +5,8 @@ infrastructure/kubernetes/base/pg-hba-configmap.yaml text eol=lf
 
 # Остальные конфиги — тоже текст, нормализуем переводы строк.
 *.conf text eol=lf
+
+# Shell-скрипты обязаны быть с LF. При core.autocrlf=true Windows-чекаут
+# получал CRLF, и bash падал с "syntax error near unexpected token `do\r'"
+# на любой строке с `do` в конце (напр. foreach по PV в preflight-storage.sh).
+*.sh text eol=lf

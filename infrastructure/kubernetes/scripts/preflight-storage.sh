@@ -97,9 +97,12 @@ echo "==> pod ownership of the data directory"
 # Confirms the init containers actually ran and chowned the mount.
 if kubectl -n "$NAMESPACE" get pod -l app=auth-postgres >/dev/null 2>&1; then
   pod="$(kubectl -n "$NAMESPACE" get pod -l app=auth-postgres -o jsonpath='{.items[0].metadata.name}')"
-  init_state="$(kubectl -n "$NAMESPACE" get pod "$pod" \
-                 -o jsonpath='{.status.initContainerStatuses[?(@.name=="init-data-dir")].state}')"
-  if [ "$init_state" = "terminated" ]; then
+  # jsonpath на .state возвращает объект (map[terminated:map[...]]), а не строку,
+  # поэтому раньше сравнение с "terminated" никогда не выполнялось и проверка
+  # владельца молча пропускалась. Запрашиваем конкретное поле .state.terminated.reason.
+  init_reason="$(kubectl -n "$NAMESPACE" get pod "$pod" \
+                 -o jsonpath='{.status.initContainerStatuses[?(@.name=="init-data-dir")].state.terminated.reason}' 2>/dev/null || true)"
+  if [ "$init_reason" = "Completed" ]; then
     green "    init-data-dir on $pod: completed"
     stat="$(kubectl -n "$NAMESPACE" exec "$pod" -c postgres -- stat -c '%u:%g %a' /var/lib/postgresql/data 2>/dev/null || echo '?')"
     case "$stat" in
@@ -107,7 +110,7 @@ if kubectl -n "$NAMESPACE" get pod -l app=auth-postgres >/dev/null 2>&1; then
       *)        yellow "    WARN: /var/lib/postgresql/data owned by $stat (expected 999:999)" ;;
     esac
   else
-    yellow "    init-data-dir on $pod has not completed yet"
+    yellow "    init-data-dir on $pod has not completed yet (reason=${init_reason:-<none>})"
   fi
 else
   yellow "    auth-postgres pod not created yet"
