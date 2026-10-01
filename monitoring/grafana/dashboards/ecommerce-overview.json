@@ -98,6 +98,49 @@
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
     },
     {
+      "id": 14,
+      "type": "timeseries",
+      "title": "p95 Latency by service (non-JVM)",
+      "description": "prometheus client libraries (order/catalog/payment) report http_request_duration_seconds_bucket; the JVM reports http_server_requests_seconds_bucket and is covered by the auth-service stat panel.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, job) (rate(http_request_duration_seconds_bucket{job=~\"order-service|catalog-service|payment-service\"}[5m])))",
+          "legendFormat": "{{job}} p95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le, job) (rate(http_request_duration_seconds_bucket{job=~\"order-service|catalog-service|payment-service\"}[5m])))",
+          "legendFormat": "{{job}} p50"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "right" } }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "HTTP Error Rate by service (5xx)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (rate(http_requests_total{job=~\"order-service|catalog-service|payment-service\", code=~\"5..\"}[5m])) or on() vector(0)",
+          "legendFormat": "{{job}} 5xx"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (job) (rate(http_server_requests_seconds_count{job=\"auth-service\", status=~\"5..\"}[5m])) or on() vector(0)",
+          "legendFormat": "{{job}} 5xx (jvm)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "right" } }
+    },
+    {
       "id": 4,
       "type": "stat",
       "title": "RabbitMQ Messages In Queue",
@@ -215,9 +258,9 @@
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "targets": [
-        { "refId": "A", "expr": "rate(rabbitmq_global_messages_published_total[5m])", "legendFormat": "published" },
+        { "refId": "A", "expr": "rate(rabbitmq_global_messages_received_total[5m])", "legendFormat": "received (published)" },
         { "refId": "B", "expr": "rate(rabbitmq_global_messages_delivered_total[5m])", "legendFormat": "delivered" },
-        { "refId": "C", "expr": "rate(rabbitmq_global_messages_unroutable_total[5m])", "legendFormat": "unroutable" },
+        { "refId": "C", "expr": "rate(rabbitmq_global_messages_unroutable_returned_total[5m])", "legendFormat": "unroutable" },
         { "refId": "D", "expr": "rate(rabbitmq_global_messages_redelivered_total[5m])", "legendFormat": "redelivered" }
       ],
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
@@ -230,7 +273,7 @@
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
       "targets": [
-        { "refId": "A", "expr": "process_resident_memory_bytes{job!=\"prometheus\"}", "legendFormat": "{{job}} rss" },
+        { "refId": "A", "expr": "process_resident_memory_bytes{job!=\"prometheus\"} or process_working_set_bytes{job!=\"prometheus\"}", "legendFormat": "{{job}} rss" },
         { "refId": "B", "expr": "rate(process_cpu_seconds_total{job!=\"prometheus\"}[5m])", "legendFormat": "{{job}} cpu" }
       ],
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
@@ -264,9 +307,9 @@
     {
       "id": 13,
       "type": "text",
-      "title": "Telemetry gaps in this stack",
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 40 },
-      "options": { "mode": "markdown", "content": "**What is not instrumented yet** - these panels deliberately avoid it:\n\n- `order-service`, `catalog-service` expose only hand-rolled counters (`order_up`, `order_http_requests_total`, `catalog_up`, ...). No latency, no status codes, no error rate. HTTP panels cover `auth-service` only.\n- `cart-service` exposes Node.js runtime metrics (`nodejs_active_handles`) but no request latency.\n- `payment-service` exposes only process metrics - no business metrics at all.\n- `analytics-fastapi` does not answer `/metrics`; Prometheus scrapes a non-existent endpoint and reports it as up only because the port is open.\n\nTo close the gaps, add `prometheus-netstat`/`HttpMetrics` middleware to the .NET services and `prometheus-client` counters to the Python service." }
+      "title": "Telemetry status in this stack",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 48 },
+      "options": { "mode": "markdown", "content": "**Instrumentation per service**\n\n| Service | Stack | HTTP latency | Status codes |\n| --- | --- | --- | --- |\n| `auth-service` | Java / Spring + Micrometer | `http_server_requests_seconds` | yes |\n| `order-service` | .NET 8 + prometheus-net | `http_request_duration_seconds` | yes |\n| `catalog-service` | Go + client_golang | `http_request_duration_seconds` | yes |\n| `payment-service` | Python + prometheus_client | `http_request_duration_seconds` | yes |\n| `analytics-service` | Python + prometheus_client | business counters only | n/a (no HTTP API besides `/summary`) |\n| `api-gateway` | Node + prom-client | runtime metrics only | no |\n| `cart-service` | Node | runtime metrics only | no |\n\nTwo naming conventions coexist by design: Micrometer (`http_server_*`) for the JVM, the Prometheus client libraries (`http_request_*`) everywhere else. Panels query both.\n\nRSS is also reported under two names: `process_resident_memory_bytes` (Node, Python) and `process_working_set_bytes` (.NET), so the Process Resources panel merges them with `or`." }
     }
   ]
 }

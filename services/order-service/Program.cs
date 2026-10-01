@@ -5,6 +5,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
 using MongoDB.Driver;
 using OrderService.Services;
+using Prometheus;
+using Prometheus.HttpMetrics;
 using System;
 using System.IO;
 using System.Security.Cryptography;
@@ -73,14 +75,31 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
-// Минимальная экспозиция метрик Prometheus (без стороннего пакета)
-app.MapGet("/metrics", () => Results.Text(
-    "# HELP order_http_requests_total Total HTTP requests.\n" +
-    "# TYPE order_http_requests_total counter\n" +
-    "order_http_requests_total 0\n" +
-    "# HELP order_up Is the order service up.\n" +
-    "# TYPE order_up gauge\n" +
-    "order_up 1\n",
-    "text/plain; version=0.0.4"));
+// Реальные метрики Prometheus (prometheus-net.AspNetCore) вместо прежнего
+// /metrics, который возвращал захардкоженные значения.
+//
+// Имена метрик унифицированы со всем остальным стеком (catalog-service на
+// client_golang, payment-service на prometheus_client):
+//   http_requests_total             — счётчик запросов с лейблами code/method
+//   http_request_duration_seconds   — гистограмма latency
+//   http_requests_in_progress       — текущая нагрузка
+// Штатное имя prometheus-net http_requests_received_total переопределено, иначе
+// один и тот же запрос в Grafane/Prometheus пришлось бы писать двумя разными
+// выражениями для .NET и для остальных языков.
+var requestCounter = Metrics.CreateCounter(
+    "http_requests_total",
+    "Total HTTP requests.",
+    new CounterConfiguration { LabelNames = new[] { "code", "method" } });
+
+app.UseHttpMetrics(new HttpMiddlewareExporterOptions
+{
+    RequestCount = new HttpRequestCountOptions { Counter = requestCounter },
+});
+
+// Gauge доступности: 1 пока процесс обслуживает scrape.
+var upGauge = Metrics.CreateGauge("order_up", "Is the order service up.");
+upGauge.Set(1);
+
+app.MapMetrics("/metrics");
 
 app.Run();

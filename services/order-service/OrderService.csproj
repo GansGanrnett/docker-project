@@ -10,6 +10,9 @@
     <PackageReference Include="MongoDB.Driver" Version="2.23.0" />
     <PackageReference Include="RabbitMQ.Client" Version="6.8.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
+    <!-- Real HTTP metrics: request duration, status code, in-flight gauge.
+         Replaces the hardcoded /metrics stub. -->
+    <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
   </ItemGroup>
 
 </Project>
