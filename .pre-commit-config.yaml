@@ -1,0 +1,45 @@
+# Локальные хуки: ловим утечку секретов ДО коммита, а не в CI.
+#
+# Почему дублирует CI: джоб security-scan уже гоняет gitleaks, но он
+# срабатывает на PR - то есть после того, как секрет уже попал в историю
+# ветки. Хук останавливает коммит на месте.
+#
+# Набор намеренно узкий: только то, что относится к безопасности.
+# Проверки форматирования (end-of-file-fixer, trailing-whitespace) и
+# check-yaml сюда не входят:
+#   - форматирование при переформатировании тронет ~25 файлов, это
+#     отдельная задача, а не фаза 0;
+#   - check-yaml спотыкается на helm-шаблонах (templates/*.yaml), они
+#     не являются валидным YAML до рендера через tiller - их проверяет
+#     helm lint в CI.
+#
+# Установка: make install-hooks   (или pre-commit install)
+# Обход одного правила: SKIP=detect-private-key git commit -m "..."
+# Обход всех:       SKIP=gitleaks,detect-private-key,check-added-large-files,check-merge-conflict git commit -m "..."
+# Проверка ветки целиком: make pre-commit-run
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: detect-private-key
+        name: detect private key
+        # JwtConfig.java содержит строки заголовков PEM
+        # (-----BEGIN PRIVATE KEY-----) для их вырезания из файла,
+        # но не ключ. Хук срабатывает на самом заголовке, поэтому
+        # файл приходится исключать явно - иначе хук заблокирует
+        # каждый коммит по этому классу.
+        exclude: '^services/auth-service/src/main/java/com/example/auth/JwtConfig\.java$'
+
+      - id: check-added-large-files
+        args: ['--maxkb=1024']
+        # Ловит случайно закоммиченные бинарники, не ключи.
+        exclude: '\.jar$'
+
+      - id: check-merge-conflict
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      # Исключения ведутся в .gitleaksignore, если понадобится.
+      - id: gitleaks
