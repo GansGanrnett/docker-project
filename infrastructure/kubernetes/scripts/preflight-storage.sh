@@ -104,17 +104,26 @@ echo "==> pod ownership of the data directory"
 check_init() {
   local sel="$1" cname="$2" container="$3" path="$4"
 
-  if ! kubectl -n "$NAMESPACE" get pod -l "app=$sel" >/dev/null 2>&1; then
-    yellow "    $sel pod not created yet"
+  # `kubectl get pod -l` SUCCEEDS with an empty list when the workload is
+  # scaled to zero, so its exit status cannot be used as an existence check.
+  # The pod name has to be extracted explicitly, and an empty result means
+  # "no pod to inspect" rather than an error - otherwise `{.items[0]...}`
+  # fails with "array index out of bounds" and, under `set -e`, kills the
+  # whole script.
+  local pod
+  pod="$(kubectl -n "$NAMESPACE" get pod -l "app=$sel" \
+           -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -z "$pod" ]; then
+    yellow "    $sel: no pod (scaled to zero, or not scheduled yet)"
     return
   fi
 
-  local pod
-  pod="$(kubectl -n "$NAMESPACE" get pod -l "app=$sel" -o jsonpath='{.items[0].metadata.name}')"
-
   local reason
+  # `|| true` is load-bearing: under `set -e` a failing command substitution in
+  # an assignment aborts the whole script. An unreadable state must degrade to
+  # a warning, not a crash.
   reason="$(kubectl -n "$NAMESPACE" get pod "$pod" \
-              -o jsonpath="{.status.initContainerStatuses[?(@.name==\"$cname\")].state.terminated.reason}")"
+              -o jsonpath="{.status.initContainerStatuses[?(@.name==\"$cname\")].state.terminated.reason}" 2>/dev/null || true)"
   if [ "$reason" != "Completed" ]; then
     yellow "    $cname on $pod: ${reason:-not completed yet}"
     return
