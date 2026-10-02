@@ -120,7 +120,10 @@ class FakeConnection:
 @pytest.fixture(autouse=True)
 def clean_state(monkeypatch):
     """Пустое состояние идемпотентности и подменённый брокер в каждом тесте."""
-    monkeypatch.setenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+    # Без логина и пароля в URL намеренно: строка с учётными данными в коде
+    # ловится проверкой жёстких секретов в CI, а pika подставляет
+    # guest/guest сам - для теста разницы нет.
+    monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
     _processed_orders.clear()
     yield
     _processed_orders.clear()

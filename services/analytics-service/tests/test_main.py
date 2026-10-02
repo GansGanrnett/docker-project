@@ -99,6 +99,8 @@ class TestTopology:
     """Раскладка exchange/queue/DLX разъезжается после issue #37, F-06."""
 
     def _declared(self, monkeypatch):
+        # Учётные данные в URL намеренно опущены: такая строка попадает под
+        # проверку жёстких секретов в CI, а pika подставит guest/guest сам.
         fake = RecordingChannel()
         attempts = []
 
@@ -106,7 +108,7 @@ class TestTopology:
             attempts.append(params)
             return FakeConnection(fake)
 
-        monkeypatch.setenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
         monkeypatch.setattr(main.pika, "BlockingConnection", factory)
 
         with pytest.raises(_StopConsumer):
@@ -158,7 +160,7 @@ class TestMessageHandling:
 
     def test_bad_payload_goes_to_dlq_without_requeue(self, monkeypatch):
         fake = RecordingChannel()
-        monkeypatch.setenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
         monkeypatch.setattr(main.pika, "BlockingConnection",
                             lambda params: FakeConnection(fake))
         with pytest.raises(_StopConsumer):
@@ -179,7 +181,7 @@ class TestMessageHandling:
         with main.aggregates_lock:
             before = main.aggregates["total_orders_count"]
         fake = RecordingChannel()
-        monkeypatch.setenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
         monkeypatch.setattr(main.pika, "BlockingConnection",
                             lambda params: FakeConnection(fake))
         with pytest.raises(_StopConsumer):

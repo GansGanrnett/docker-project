@@ -261,13 +261,84 @@ jobs:
           pip install -r services/payment-service/requirements.txt
           pip install -r services/analytics-service/requirements.txt
 
-      - name: Test payment-service
+      - name: Test payment-service (unit)
         working-directory: services/payment-service
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -v --ignore=tests/test_rabbitmq_integration.py
 
-      - name: Test analytics-service
+      - name: Test payment-service against RabbitMQ
+        # Publisher confirms и переоткрытие канала проверяются на живом
+        # брокере: с заглушкой тест доказывал бы только то, что мок отдаёт
+        # заранее заданный ответ.
+        working-directory: services/payment-service
+        env:
+          RABBITMQ_TEST_URL: amqp://guest:guest@localhost:5672/
+        run: |
+          set -euo pipefail
+
+          python -m pytest tests/test_rabbitmq_integration.py -v \
+            --junitxml="$RUNNER_TEMP/payment-integration.xml" \
+            | tee "$RUNNER_TEMP/payment-integration.log"
+
+          report="$RUNNER_TEMP/payment-integration.xml"
+          if [ ! -f "$report" ]; then
+            echo "::error::JUnit-отчёт интеграционных тестов не создан"
+            exit 1
+          fi
+
+          passed="$(grep -c '<testcase' "$report" || true)"
+          skipped="$(grep -c '<skipped' "$report" || true)"
+          echo "интеграционных проверок payment-service выполнено: $passed, пропущено: $skipped"
+
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped интеграционных проверок пропущено - брокер должен быть доступен"
+            exit 1
+          fi
+
+          if [ "$passed" -ne 3 ]; then
+            echo "::error::выполнено $passed интеграционных проверок, ожидалось ровно 3"
+            exit 1
+          fi
+
+      - name: Test analytics-service (unit)
         working-directory: services/analytics-service
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -v --ignore=tests/test_rabbitmq_integration.py
+
+      - name: Test analytics-service against RabbitMQ
+        # Отдельный шаг, а не флаг у предыдущего: без брокера интеграционные
+        # тесты молча помечаются skipped, и зелёный прогон ничего не
+        # говорил бы о маршрутизации dead letter и prefetch.
+        working-directory: services/analytics-service
+        env:
+          RABBITMQ_TEST_URL: amqp://guest:guest@localhost:5672/
+        run: |
+          set -euo pipefail
+
+          python -m pytest tests/test_rabbitmq_integration.py -v \
+            --junitxml="$RUNNER_TEMP/analytics-integration.xml" \
+            | tee "$RUNNER_TEMP/analytics-integration.log"
+
+          # Отчёт и явный счётчик: пустой прогон не должен выглядеть как
+          # успех, и число выполненных проверок должно быть видно в логе.
+          report="$RUNNER_TEMP/analytics-integration.xml"
+          if [ ! -f "$report" ]; then
+            echo "::error::JUnit-отчёт интеграционных тестов не создан"
+            exit 1
+          fi
+
+          passed="$(grep -c '<testcase' "$report" || true)"
+          skipped="$(grep -c '<skipped' "$report" || true)"
+          echo "интеграционных проверок выполнено: $passed, пропущено: $skipped"
+
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped интеграционных проверок пропущено - брокер должен быть доступен"
+            exit 1
+          fi
+
+          if [ "$passed" -ne 5 ]; then
+            echo "::error::выполнено $passed интеграционных проверок, ожидалось ровно 5"
+            exit 1
+          fi
+          echo "маршрутизация DLX, confirms и prefetch проверены на живом брокере"
 
       - name: Set up MongoDB
         # Сервис для интеграционных тестов order-service. Версия 6 совпадает
@@ -276,6 +347,25 @@ jobs:
         uses: supercharge/mongodb-github-action@1.11.0
         with:
           mongodb-version: 6.0
+
+      - name: Set up RabbitMQ
+        # Сервис для интеграционных тестов аналитики: маршрутизация dead
+        # letter, publisher confirms и prefetch проверяются настоящим
+        # брокером, а не заглушками. Версия 3.12 совпадает с docker-compose
+        # и base/манифестами.
+        # rabbitmq/ci-entrypoint публикует 3.12.7 - последнюю с доступным
+        # amd64-образом в этой ветке; alpine-теги тянут arm64 и на
+        # x86-раннере без проблем не собираются.
+        services:
+          rabbitmq:
+            image: rabbitmq:3.12.7-management
+            ports:
+              - 5672:5672
+            options: >-
+              --health-cmd "rabbitmq-diagnostics -q ping"
+              --health-interval 10s
+              --health-timeout 5s
+              --health-retries 12
 
       - name: Build order-service (.NET)
         working-directory: services/order-service
