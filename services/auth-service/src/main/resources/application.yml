@@ -24,6 +24,13 @@ management:
       enabled: true
     health:
       show-details: always
+  metrics:
+    distribution:
+      # Без этого Micrometer публикует только _count/_sum для
+      # http_server_requests_seconds, и histogram_quantile в Grafana всегда
+      # возвращает пусто: p95 посчитать не по чему.
+      percentiles-histogram:
+        http.server.requests: true
 
 jwt:
   private-key-path: ${JWT_PRIVATE_KEY_PATH:file:configs/private.pem}
