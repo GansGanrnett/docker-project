@@ -236,6 +236,22 @@ jobs:
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.services == 'true' || github.event_name == 'pull_request'
+    # RabbitMQ поднимается сервисом на уровне job, а не шага: services в
+    # step работает только внутри job-контейнера, а этот job идёт напрямую
+    # на раннере. Проверка health-gate'ит шаги до старта тестов, поэтому
+    # брокер гарантированно готов, а не «успел подняться или нет».
+    services:
+      rabbitmq:
+        # Версия 3.12 совпадает с docker-compose и base/манифестами:
+        # тесты не должны проходить на брокере, которого нет в продакшене.
+        image: rabbitmq:3.12.7-management
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -347,25 +363,6 @@ jobs:
         uses: supercharge/mongodb-github-action@1.11.0
         with:
           mongodb-version: 6.0
-
-      - name: Set up RabbitMQ
-        # Сервис для интеграционных тестов аналитики: маршрутизация dead
-        # letter, publisher confirms и prefetch проверяются настоящим
-        # брокером, а не заглушками. Версия 3.12 совпадает с docker-compose
-        # и base/манифестами.
-        # rabbitmq/ci-entrypoint публикует 3.12.7 - последнюю с доступным
-        # amd64-образом в этой ветке; alpine-теги тянут arm64 и на
-        # x86-раннере без проблем не собираются.
-        services:
-          rabbitmq:
-            image: rabbitmq:3.12.7-management
-            ports:
-              - 5672:5672
-            options: >-
-              --health-cmd "rabbitmq-diagnostics -q ping"
-              --health-interval 10s
-              --health-timeout 5s
-              --health-retries 12
 
       - name: Build order-service (.NET)
         working-directory: services/order-service
