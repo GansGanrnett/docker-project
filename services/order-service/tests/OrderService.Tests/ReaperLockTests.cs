@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Driver;
 using OrderService.Models;
 using OrderService.Services;
@@ -123,10 +124,21 @@ namespace OrderService.Tests
             Assert.Equal(1, count);
         }
 
+        /// <summary>
+        /// Тестовая копия ReaperLock. Имена полей повторяют продовые
+        /// атрибуты: документ в базе пишет сервис, и если этот тип
+        /// разойдётся с ним по схеме, тест упадёт на десериализации
+        /// и ничего не проверит.
+        /// </summary>
         private sealed class BsonReaperLockDoc
         {
+            [BsonId]
             public string Id { get; set; } = default!;
+
+            [BsonElement("holder")]
             public string Holder { get; set; } = default!;
+
+            [BsonElement("expiresAt")]
             public DateTime ExpiresAt { get; set; }
         }
 

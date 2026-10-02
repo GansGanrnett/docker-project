@@ -186,10 +186,18 @@ namespace OrderService.Migrations
                 // но он попадал в поле как литерал {"$ifNull": [...]},
                 // и дата становилась мусором - такой датой нельзя ни
                 // считать возраст заказа, ни сравнивать с дедлайном.
+                // _id обязан быть ObjectId, а не строкой: модель объявляет Id как
+                // string с [BsonRepresentation(BsonType.ObjectId)], поэтому
+                // типизированный фильтр конвертирует сам, а raw-документ -
+                // нет. Со строкой в "$in" сервер не находит ничего и молча
+                // обновляет 0 записей.
+                var idValues = new BsonArray(
+                    ids.Select(i => (BsonValue)new ObjectId(i)));
+
                 var dateResult = await _rawOrders.UpdateManyAsync(
                     new BsonDocument
                     {
-                        { "_id", new BsonDocument("$in", new BsonArray(ids)) },
+                        { "_id", new BsonDocument("$in", idValues) },
                         { "StatusChangedAt", new BsonDocument("$exists", false) }
                     },
                     new BsonDocument("$set", new BsonDocument("StatusChangedAt", "$CreatedAt")),
