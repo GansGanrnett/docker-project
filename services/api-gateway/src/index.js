@@ -18,11 +18,19 @@ const httpRequestCounter = new client.Counter({
     labelNames: ['method', 'route', 'status']
 });
 
+// Probe and scrape traffic is not business traffic. kubelet hits /health and
+// /ready every 10s, and Prometheus scrapes on its own schedule; counting them
+// would leave api_gateway_http_requests_total almost entirely probe noise with
+// real requests as a rounding error.
+const UNCOUNTED_PATHS = new Set(['/health', '/ready', '/metrics']);
+
 app.use((req, res, next) => {
     console.log(`[API-GATEWAY] ${req.method} ${req.url}`);
-    res.on('finish', () => {
-        httpRequestCounter.labels(req.method, req.path, res.statusCode).inc();
-    });
+    if (!UNCOUNTED_PATHS.has(req.path)) {
+        res.on('finish', () => {
+            httpRequestCounter.labels(req.method, req.path, res.statusCode).inc();
+        });
+    }
     next();
 });
 
@@ -31,7 +39,18 @@ app.get('/metrics', async (req, res) => {
     res.end(await client.register.metrics());
 });
 
+// Liveness: the process is up and can accept connections. No dependency is
+// checked - a liveness probe that fails during a downstream outage restarts
+// every replica without fixing anything.
 app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'UP', service: 'api-gateway' });
+});
+
+// Readiness equals liveness here: the gateway is stateless and forwards on
+// demand. A catalog or auth outage must not pull the gateway out of the load
+// balancer - that belongs to the circuit breaker, and failing readiness would
+// turn a partial outage into a total one.
+app.get('/ready', (req, res) => {
     res.status(200).json({ status: 'UP', service: 'api-gateway' });
 });
 
@@ -115,6 +134,12 @@ app.use((req, res) => {
     res.status(404).json({ error: 'Route not found on API Gateway' });
 });
 
-app.listen(PORT, () => {
-    console.log(`=== API Gateway Protection started on port ${PORT} ===`);
-});
+// Exported so tests can drive the routes without binding the deployment port.
+// require.main is the guard: importing this file must not start a listener.
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`=== API Gateway Protection started on port ${PORT} ===`);
+    });
+}
+
+module.exports = app;
