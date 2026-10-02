@@ -9,13 +9,21 @@ RABBITMQ_TEST_URL, в CI она всегда задана (issue #37, F-06/F-07/
 очередям, что и сервисы, и не должны мешать друг другу при повторном
 прогоне на одном брокере.
 """
+import json
 import os
+import socket
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 
 import pika
 import pytest
+import uvicorn
+
+import main
 
 RABBITMQ_TEST_URL = os.getenv("RABBITMQ_TEST_URL")
 pytestmark = pytest.mark.skipif(
@@ -219,3 +227,133 @@ class TestPrefetch:
         except Exception:
             pass
         channel.queue_delete(queue=queue)
+
+
+# Management API нужна, чтобы оборвать соединение на стороне брокера.
+# Локально переменной нет - тест пропускается; в CI она всегда задана.
+RABBITMQ_MANAGEMENT_URL = os.getenv("RABBITMQ_MANAGEMENT_URL")
+
+
+def _free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _status(url):
+    """HTTP-код ответа, в том числе для 503.
+
+    urllib бросает HTTPError на не-2xx, поэтому 503 из /ready пришлось бы
+    отдельно разворачивать в try/except - тест о пробе готовности не должен
+    этим заниматься.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def _wait_for_status(url, expected, timeout):
+    """Ждёт ожидаемый код возврата, возвращает последний наблюдённый.
+
+    Отдаём последний код, а не True/False: в сообщении об ошибке видно,
+    чем ответил сервис на самом деле, а не просто что не дождались.
+    """
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        last = _status(url)
+        if last == expected:
+            return last
+        time.sleep(0.2)
+    return last
+
+
+def _management(path, method="GET"):
+    request = urllib.request.Request(
+        RABBITMQ_MANAGEMENT_URL + path, method=method)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        payload = response.read()
+    return json.loads(payload) if payload else None
+
+
+def _wait_for_management_api(timeout=60.0):
+    """Плагин управления поднимается позже самого брокера.
+
+    health-cmd контейнера проверяет только AMQP-узел, поэтому доступность
+    management API - отдельная величина, которую надо дождаться.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            _management("/api/overview")
+            return True
+        except Exception:
+            time.sleep(1.0)
+    return False
+
+
+@pytest.mark.skipif(
+    not RABBITMQ_MANAGEMENT_URL,
+    reason="нужен RABBITMQ_MANAGEMENT_URL: обрыв соединения делает брокер")
+class TestReadinessDuringBrokerOutage:
+    """Нюанс #36: падение зависимости должно отражаться в /ready сразу.
+
+    Unit-тесты проверяют логику на заглушках. Здесь настоящий брокер
+    обрывает соединение сам, и единственный способ узнать, что сервис
+    переживает аварию без перезапуска, - смотреть на живой /ready.
+    """
+
+    def test_ready_drops_then_recovers_without_restart(self):
+        assert _wait_for_management_api(), (
+            "management API брокера не поднялся - тест не может оборвать "
+            "соединение так, как это делает реальная авария")
+
+        port = _free_port()
+        previous_url = os.environ.get("RABBITMQ_URL")
+        os.environ["RABBITMQ_URL"] = RABBITMQ_TEST_URL
+        main.consumer_state.reset()
+
+        config = uvicorn.Config(
+            main.app, host="127.0.0.1", port=port,
+            log_level="warning", lifespan="on")
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+
+        base = f"http://127.0.0.1:{port}"
+        try:
+            assert _wait_for_status(f"{base}/ready", 200, 30.0) == 200, (
+                "сервис не стал готов при живом брокере")
+
+            # Снимок до удаления: переподключившийся консьюмер создаст
+            # новое соединение с другим именем, и оно переживёт обрыв.
+            connections = _management("/api/connections")
+            names = [item["name"] for item in connections]
+            assert names, (
+                "у брокера нет ни одного соединения - консьюмер не подключился")
+
+            for name in names:
+                _management(
+                    "/api/connections/" + urllib.parse.quote(name, safe=""),
+                    method="DELETE")
+
+            assert _wait_for_status(f"{base}/ready", 503, 30.0) == 503, (
+                "/ready не стал 503 после обрыва соединения с брокером")
+            assert _status(f"{base}/health") == 200, (
+                "liveness не должен падать при обрыве брокера - иначе "
+                "kubelet перезапустит под, который починится сам")
+
+            assert _wait_for_status(f"{base}/ready", 200, 45.0) == 200, (
+                "сервис не вернулся в готовность без перезапуска процесса")
+        finally:
+            server.should_exit = True
+            thread.join(timeout=15)
+            if previous_url is None:
+                os.environ.pop("RABBITMQ_URL", None)
+            else:
+                os.environ["RABBITMQ_URL"] = previous_url
+            main.consumer_state.reset()
