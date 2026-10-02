@@ -303,7 +303,8 @@ def rabbitmq_consumer():
         raise RuntimeError("RABBITMQ_URL is not set")
 
     while True:
-        connection = None
+        duplicate = False
+        reason = "consuming loop finished"
         try:
             print(f"[ANALYTICS] Connecting to RabbitMQ at {rabbit_url}...")
             params = pika.URLParameters(rabbit_url)
@@ -320,23 +321,47 @@ def rabbitmq_consumer():
                 # Подписка от предыдущей итерации ещё числится активной.
                 # Второй consumer на той же очереди обработал бы каждый
                 # платёж дважды, поэтому просто ждём следующей итерации.
+                # Своё соединение закрываем сами, а consumer_state.end()
+                # здесь не вызываем: стёрли бы чужую подписку и /ready
+                # остался бы 503 навсегда.
                 print("[ANALYTICS-CRIT] Consumer already active, "
                       "refusing to start a duplicate")
-                continue
+                try:
+                    if not channel.is_closed:
+                        channel.close()
+                    if not connection.is_closed:
+                        connection.close()
+                except Exception as close_error:
+                    print("[ANALYTICS-WARN] duplicate cleanup failed: "
+                          f"{close_error}")
+                reason = "another consumer is already active"
+                duplicate = True
+            else:
+                print(" [*] Analytics consumer started successfully. "
+                      "Listening for payment events...")
+                channel.start_consuming()
 
-            print(" [*] Analytics consumer started successfully. "
-                  "Listening for payment events...")
-            channel.start_consuming()
-
-        except AMQPConnectionError:
-            print("[ANALYTICS-WARN] RabbitMQ is not ready yet. "
-                  f"Retrying in {RECONNECT_DELAY_SECONDS} seconds...")
-            time.sleep(RECONNECT_DELAY_SECONDS)
-        except Exception as e:
-            print(f"[ANALYTICS-CRIT] Consumer crashed: {e}. Restarting...")
-            time.sleep(RECONNECT_DELAY_SECONDS)
+        except AMQPConnectionError as error:
+            reason = f"RabbitMQ is not ready yet: {error}"
+        except Exception as error:
+            # Цикл обязан выжить: единственный способ пережить падение
+            # брокера - не дать потоку умереть.
+            reason = f"consumer crashed: {error}"
         finally:
-            # Вызывается и после успешного выхода из start_consuming, и
-            # после исключения. _StopConsumer в тестах - BaseException,
-            # поэтому блок finally не мешает ему выйти из функции.
-            consumer_state.end("consuming loop finished")
+            # Сначала чистка, потом пауза. Со sleep внутри except блок finally
+            # выполнялся после него, и состояние оставалось "up" все время
+            # backoff: /ready отвечал 200, хотя consumer'а не было, и kubelet
+            # успевал зарулить трафик в под без подписки. Готовность отставала
+            # от аварии на RECONNECT_DELAY_SECONDS.
+            #
+            # finally, а не обычный код: _StopConsumer в тестах - BaseException,
+            # и без finally состояние осталось бы "up" при выходе из функции.
+            #
+            # Исключение - отказ от дубля: там active сила у чужой подписки,
+            # и end() стёр бы её вместе с её соединением.
+            if not duplicate:
+                consumer_state.end(reason)
+
+        print(f"[ANALYTICS-WARN] {reason}. "
+              f"Retrying in {RECONNECT_DELAY_SECONDS} seconds...")
+        time.sleep(RECONNECT_DELAY_SECONDS)

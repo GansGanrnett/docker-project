@@ -177,6 +177,34 @@ class TestReadiness:
             main.ready_check()
         assert exc.value.status_code == 503
 
+    def test_state_goes_down_before_the_reconnect_pause(self, monkeypatch):
+        """Готовность обязана падать до паузы reconnect'а, а не после неё.
+
+        Пока состояние "up", /ready отвечает 200 - и kubelet продолжает
+        слать трафик в под, где никого нет. Пауза reconnect'а равна
+        RECONNECT_DELAY_SECONDS, то есть все 5 секунд после обрыва
+        сервис врал о готовности.
+        """
+        def factory(params):
+            raise main.pika.exceptions.AMQPConnectionError("broker unreachable")
+
+        observed = []
+
+        def record_and_stop(_seconds):
+            observed.append(main.consumer_state.state)
+            raise _StopConsumer()
+
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
+        monkeypatch.setattr(main.pika, "BlockingConnection", factory)
+        monkeypatch.setattr(main.time, "sleep", record_and_stop)
+
+        with pytest.raises(_StopConsumer):
+            main.rabbitmq_consumer()
+
+        assert observed == ["down"], (
+            "состояние должно стать 'down' до паузы reconnect'а, "
+            f"а во время паузы было {observed!r}")
+
     def test_reconnect_recovers_after_broker_returns(self, monkeypatch):
         """После обрыва и возврата брокера сервис снова становится готов.
 
