@@ -283,10 +283,25 @@ class TestHeartbeat:
         assert conn.process_calls == [HEARTBEAT_TIME_LIMIT_SECONDS]
         assert em._connection is conn, "живое соединение не трогаем"
 
-    def test_no_connection_means_no_heartbeat(self):
+    def test_no_connection_reconnects_instead_of_heartbeat(self, monkeypatch):
+        """Без соединения heartbeat не качает - он инициирует переподключение.
+
+        Тест раньше утверждал, что _connection остаётся None. С появлением
+        connect_quietly это уже не контракт: без переподключения /ready не
+        восстановился бы сам, а это ровно то, что чинит #36. Поэтому
+        переподключение заглушено, и проверяется попытка, а не наличие
+        соединения - иначе результат зависел бы от того, слушает ли
+        localhost:5672 в момент прогона. Именно так этот тест и падал в CI:
+        локально брокера нет, в CI он есть.
+        """
         em = emitter.__class__()
+        attempts = []
+        monkeypatch.setattr(em, "connect_quietly", lambda: attempts.append(1))
+
         em._heartbeat_once()  # не должно бросать исключение
-        assert em._connection is None
+
+        assert attempts == [1], "без соединения heartbeat обязан переподключиться"
+        assert em._connection is None, "заглушка не должна создавать соединение"
 
     def test_closed_connection_is_skipped(self):
         conn = FakeConnection(FakeChannel())
@@ -370,16 +385,23 @@ class TestReadiness:
     трафиком, который уходил в 503 на каждый платёж.
     """
 
-    def _emitter_no_broker(self):
-        """Emitter без соединения: состояние never, ничего не подключено."""
+    def _fresh_emitter(self):
+        """Только что собранный emitter: состояние never, ничего не подключено.
+
+        Имя было _emitter_no_broker, и это обещание было ложным: тело
+        ничего не изолирует от брокера, слушающего localhost:5672.
+        Конструктор не подключается, поэтому состояние всегда never, но
+        полагаться на отсутствие брокера здесь нельзя - если тесту нужен
+        недоступный брокер, он заглушает pika.BlockingConnection.
+        """
         return emitter.__class__()
 
     def test_state_starts_as_never(self):
-        assert self._emitter_no_broker().connection_state == "never"
-        assert self._emitter_no_broker().ever_connected is False
+        assert self._fresh_emitter().connection_state == "never"
+        assert self._fresh_emitter().ever_connected is False
 
     def test_ready_returns_503_when_never_connected(self, monkeypatch):
-        em = self._emitter_no_broker()
+        em = self._fresh_emitter()
         monkeypatch.setattr("main.emitter", em)
 
         with pytest.raises(HTTPException) as exc:
@@ -486,7 +508,7 @@ class TestReadiness:
 
     def test_failed_connect_marks_down_and_raises(self, monkeypatch):
         """Ошибка подключения переводит в down и не остаётся в None."""
-        em = self._emitter_no_broker()
+        em = self._fresh_emitter()
 
         def factory(params):
             raise pika.exceptions.AMQPConnectionError("broker unreachable")
@@ -514,7 +536,7 @@ class TestReadiness:
             return FakeConnection(FakeChannel())
 
         monkeypatch.setattr(pika, "BlockingConnection", factory)
-        em = self._emitter_no_broker()
+        em = self._fresh_emitter()
         em._connect()
 
         assert captured["params"].socket_timeout == CONNECT_TIMEOUT_SECONDS
