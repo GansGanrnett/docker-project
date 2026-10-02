@@ -29,12 +29,63 @@ spec:
       labels:
         app: cart-redis
     spec:
+      # hostPath DirectoryOrCreate leaves the directory root:root 0755, but both
+      # images run as uid 999 and cannot write there. Same handover pattern as
+      # init-data-dir in auth-postgres.yaml and init-mongo-data below.
+      initContainers:
+        - name: init-redis-data
+          image: redis:7.0-alpine
+          command:
+            - sh
+            - -c
+            - chown -R 999:999 /data
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
       containers:
         - name: cart-redis
           image: redis:7.0-alpine
+          # Matches docker-compose. AOF is what makes the volume meaningful:
+          # with the default RDB-only config a pod killed between snapshots
+          # loses everything written since the last one.
+          args: ["--appendonly", "yes"]
           ports:
             - containerPort: 6379
               name: redis-port
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-cart-pvc
 ---
 # 2. MongoDB для Заказов (.NET 8)
 apiVersion: apps/v1
@@ -107,14 +158,74 @@ spec:
       labels:
         app: message-rabbitmq
     spec:
+      # Fixed hostname so RABBITMQ_NODENAME below resolves to the pod's own IP.
+      # Must stay distinct from the `message-rabbitmq-service` Service name.
+      hostname: message-rabbitmq
+      initContainers:
+        - name: init-rabbitmq-data
+          image: rabbitmq:3.12-management-alpine
+          command:
+            - sh
+            - -c
+            - chown -R 999:999 /var/lib/rabbitmq
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
       containers:
         - name: message-rabbitmq
           image: rabbitmq:3.12-management-alpine
+          env:
+            # The name of the mnesia directory is derived from the node name, and
+            # RabbitMQ defaults the node name to `rabbit@<hostname>`. The pod
+            # hostname is random, so every restart would look in a brand new
+            # directory: durable queues, messages and the DLQs would vanish even
+            # though the PVC is mounted and healthy. Pinning the node name makes
+            # the mnesia directory stable across restarts.
+            - name: RABBITMQ_NODENAME
+              value: rabbit@message-rabbitmq
           ports:
             - containerPort: 5672
               name: amqp-port
             - containerPort: 15672
               name: rabbitmq-mgmt
+          # Without these the pod reports Ready within a second of the container
+          # starting, while the broker needs ~15s more. Anything gating on
+          # Ready (a Job, a Helm post-install hook, a deploy pipeline) then
+          # talks to a broker that does not exist yet.
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq
+      volumes:
+        - name: rabbitmq-data
+          persistentVolumeClaim:
+            claimName: rabbitmq-messages-pvc
 ---
 apiVersion: v1
 kind: Service
