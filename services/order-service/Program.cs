@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
 using MongoDB.Driver;
+using OrderService.Migrations;
 using OrderService.Services;
 using System;
 using System.IO;
@@ -12,6 +13,17 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Одноразовая миграция статусов заказа (#34). Запускается вместо старта сервиса:
+//   dotnet run -- migrate-statuses         только считает, ничего не пишет
+//   dotnet run -- migrate-statuses --yes   переводит legacy-значения
+// Проверка стоит до чтения переменных окружения сервиса: миграция сама
+// разбирается со своим MONGO_URL и отдаёт внятную ошибку с кодом возврата,
+// а не падает в необработанном исключении.
+if (OrderStatusMigration.IsRequested(args))
+{
+    return await OrderStatusMigration.RunAsCommandAsync(args);
+}
 
 // === MongoDB ===
 var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL")
@@ -68,6 +80,35 @@ builder.Services.AddHttpClient("catalog", client =>
 
 var app = builder.Build();
 
+// Индекс для reaper'а: без него каждый проход делает collection scan по всей
+// коллекции заказов. Создание идемпотентно. Ошибка не должна ронять под - на
+// медленной или недоступной MongoDB индекс дождётся следующего старта, а
+// готовность сервиса проверяет отдельный /ready (issue #36).
+try
+{
+    var orders = mongoClient.GetDatabase("order_db").GetCollection<OrderService.Models.Order>("orders");
+    var existing = new List<string>();
+    using (var cursor = await orders.Indexes.ListAsync())
+    {
+        await cursor.ForEachAsync(doc => existing.Add(doc["name"].AsString));
+    }
+
+    if (!existing.Contains(OrderStatusMigration.StatusChangedAtIndexName))
+    {
+        var model = new CreateIndexModel<OrderService.Models.Order>(
+            Builders<OrderService.Models.Order>.IndexKeys
+                .Ascending(o => o.Status)
+                .Ascending(o => o.StatusChangedAt),
+            new CreateIndexOptions { Name = OrderStatusMigration.StatusChangedAtIndexName });
+        await orders.Indexes.CreateOneAsync(model);
+        app.Logger.LogInformation("Created index {Index} on orders collection.", OrderStatusMigration.StatusChangedAtIndexName);
+    }
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "Could not ensure index {Index}; reaper will run without it.", OrderStatusMigration.StatusChangedAtIndexName);
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseDeveloperExceptionPage();
@@ -88,3 +129,4 @@ app.MapGet("/metrics", () => Results.Text(
     "text/plain; version=0.0.4"));
 
 app.Run();
+return 0;
