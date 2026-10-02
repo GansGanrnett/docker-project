@@ -300,6 +300,24 @@ def _management(path, method="GET"):
     return json.loads(payload) if payload else None
 
 
+def _wait_for_connections(timeout=20.0):
+    """Ждёт, пока брокер покажет хотя бы одно соединение, возвращает список.
+
+    Management API не работает в реальном времени: статистика собирается
+    с задержкой (по умолчанию раз в 5 секунд), поэтому сразу после
+    коннекта /api/connections может вернуть пустой список, хотя
+    соединение уже есть. Одиночный запрос - это не проверка, а лотерея.
+    """
+    deadline = time.monotonic() + timeout
+    last = []
+    while time.monotonic() < deadline:
+        last = _management("/api/connections") or []
+        if last:
+            return last
+        time.sleep(0.5)
+    return last
+
+
 def _wait_for_management_api(timeout=60.0):
     """Ждёт готовности management API, возвращает её или последнюю ошибку.
 
@@ -363,15 +381,22 @@ class TestReadinessDuringBrokerOutage:
 
             # Снимок до удаления: переподключившийся консьюмер создаст
             # новое соединение с другим именем, и оно переживёт обрыв.
-            connections = _management("/api/connections")
+            connections = _wait_for_connections()
             names = [item["name"] for item in connections]
             assert names, (
-                "у брокера нет ни одного соединения - консьюмер не подключился")
+                "у брокера нет ни одного соединения - консьюмер не подключился, "
+                "либо management API не показывает его статистику")
 
             for name in names:
-                _management(
-                    "/api/connections/" + urllib.parse.quote(name, safe=""),
-                    method="DELETE")
+                # 404 здесь означает "соединения уже нет", а для цели теста
+                # это то же самое, что удалить его: обрыв должен произойти.
+                try:
+                    _management(
+                        "/api/connections/" + urllib.parse.quote(name, safe=""),
+                        method="DELETE")
+                except urllib.error.HTTPError as error:
+                    if error.code != 404:
+                        raise
 
             assert _wait_for_status(f"{base}/ready", 503, 30.0) == 503, (
                 "/ready не стал 503 после обрыва соединения с брокером")
