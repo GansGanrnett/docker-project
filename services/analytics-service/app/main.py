@@ -26,8 +26,22 @@ SUMMARY_REQUESTS = Counter("analytics_summary_requests_total", "Total summary re
 PAYMENT_EVENTS = Counter("analytics_payment_events_total", "Total processed payment events")
 
 PAYMENT_EXCHANGE = "payment.events"
-DEAD_LETTER_EXCHANGE = "payment.events.dlx"
+# DLX теперь свой на каждый консьюмер. Общий payment.events.dlx был fanout на
+# две DLQ: битое событие аналитики попадало в orders.payment_statuses.dlq,
+# где его не ждёт ни один консьюмер (issue #37, F-06).
+#
+# Тип остаётся fanout: у exchange один получатель - своя DLQ. direct здесь
+# ловушка - dead-letter наследует routing key исходного сообщения
+# (payment.success), а бинд DLQ идёт с пустым ключом, и сообщение не
+# матчится ни одной очереди и удаляется брокером без следа. Для direct
+# понадобилось бы x-dead-letter-routing-key="" в аргументах главной очереди.
+DEAD_LETTER_EXCHANGE = "orders.analytics.dlx"
 DEAD_LETTER_QUEUE = "orders.analytics.dlq"
+# Blue/green-схема, парно с order-service: новая очередь объявляется рядом со
+# старой orders.analytics, которая остаётся в брокере как durable на прежнем
+# payment.events.dlx. Откат - смена одной константы. Очистка - отдельный
+# коммит после отработки в релизной среде.
+QUEUE = "orders.analytics.v2"
 
 # Агрегаты аналитики: словарь называется aggregates, а не metrics,
 # чтобы не конфликтовать с функцией-эндпоинтом metrics().
@@ -84,10 +98,13 @@ def rabbitmq_consumer():
             channel.queue_declare(queue=DEAD_LETTER_QUEUE, durable=True)
             channel.queue_bind(exchange=DEAD_LETTER_EXCHANGE, queue=DEAD_LETTER_QUEUE)
 
+            # Старая orders.analytics остаётся привязанной к payment.events и
+            # накапливает публикации до очистки - для тестового стенда это
+            # приемлемо, зато события продолжают доезжать при откате.
             queue = channel.queue_declare(
-                queue='orders.analytics', durable=True,
+                queue=QUEUE, durable=True,
                 arguments={"x-dead-letter-exchange": DEAD_LETTER_EXCHANGE})
-            channel.queue_bind(exchange=PAYMENT_EXCHANGE, queue='orders.analytics',
+            channel.queue_bind(exchange=PAYMENT_EXCHANGE, queue=QUEUE,
                                routing_key='payment.success')
 
             def callback(ch, method, properties, body):
@@ -111,7 +128,7 @@ def rabbitmq_consumer():
                     # Битое сообщение -> в DLQ, не теряем и не зацикливаем requeue
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
-            channel.basic_consume(queue='orders.analytics', on_message_callback=callback)
+            channel.basic_consume(queue=QUEUE, on_message_callback=callback)
             print(" [*] Analytics consumer started successfully. Listening for payment events...")
             channel.start_consuming()
 

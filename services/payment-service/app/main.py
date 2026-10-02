@@ -43,8 +43,8 @@ class PaymentRequest(BaseModel):
 class PaymentStatusEmitter:
     """Публикация событий платежей в единый topic-exchange payment.events.
 
-    Analyse:    exchange=payment.events, binding payment.success, queue orders.analytics
-    Order-svc:  exchange=payment.events, binding payment.*, queue orders.payment_statuses
+    Analyse:    exchange=payment.events, binding payment.success, queue orders.analytics.v2
+    Order-svc:  exchange=payment.events, binding payment.*, queue orders.payment_statuses.v2
     """
 
     def __init__(self):

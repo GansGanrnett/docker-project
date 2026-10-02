@@ -16,9 +16,29 @@ namespace OrderService.Services
     public class PaymentStatusConsumer : BackgroundService
     {
         private const string PAYMENT_EXCHANGE = "payment.events";
-        private const string PAYMENT_QUEUE = "orders.payment_statuses";
+
+        // Blue/green-схема. Новая очередь объявляется рядом со старой и
+        // получает собственный DLX. Старая orders.payment_statuses не
+        // удаляется: остаётся в брокере как durable-очередь на прежнем
+        // payment.events.dlx, поэтому откат - это смена одной константы,
+        // без пересоздания очередей. Очистка старых очередей - отдельный
+        // коммит после того, как .v2 отработает в релизной среде.
+        private const string PAYMENT_QUEUE = "orders.payment_statuses.v2";
         private const string ROUTING_PAYMENT_ALL = "payment.*";
-        private const string DEAD_LETTER_EXCHANGE = "payment.events.dlx";
+
+        // DLX теперь свой на каждый консьюмер. Общий payment.events.dlx был
+        // fanout на две DLQ, и отказ одного консьюмера уводил его сообщения
+        // в DLQ другого (issue #37, F-06).
+        //
+        // Тип остаётся fanout намеренно: у этого exchange ровно один
+        // получатель - своя DLQ. direct здесь ловушка - dead-letter
+        // наследует routing key исходного сообщения (payment.success), а
+        // бинд DLQ идёт с пустым ключом, и сообщение не матчится ни одной
+        // очереди и удаляется брокером без следа. Чтобы работало direct,
+        // пришлось бы добавлять x-dead-letter-routing-key="" в аргументы
+        // главной очереди. С одной DLQ на exchange выигрыш от direct
+        // отсутствует, а лишний способ выбросить сообщение - нет.
+        private const string DEAD_LETTER_EXCHANGE = "orders.payment_statuses.dlx";
         private const string DEAD_LETTER_QUEUE = "orders.payment_statuses.dlq";
 
         /// <summary>
@@ -63,6 +83,10 @@ namespace OrderService.Services
             _channel.QueueDeclare(queue: DEAD_LETTER_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: null);
             _channel.QueueBind(queue: DEAD_LETTER_QUEUE, exchange: DEAD_LETTER_EXCHANGE, routingKey: "");
 
+            // Обе очереди - старая и .v2 - остаются привязаны к payment.events,
+            // просто старую больше никто не объявляет кодом. Она продолжает
+            // принимать публикации и накапливать их до очистки: для тестового
+            // стенда это приемлемо, и обратная совместимость событий важнее.
             var dlqArgs = new Dictionary<string, object> { { "x-dead-letter-exchange", DEAD_LETTER_EXCHANGE } };
             _channel.QueueDeclare(queue: PAYMENT_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: dlqArgs);
             _channel.QueueBind(queue: PAYMENT_QUEUE, exchange: PAYMENT_EXCHANGE, routingKey: ROUTING_PAYMENT_ALL);
