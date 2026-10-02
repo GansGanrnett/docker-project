@@ -269,9 +269,42 @@ jobs:
         working-directory: services/analytics-service
         run: python -m pytest tests/ -v
 
+      - name: Set up MongoDB
+        # Сервис для интеграционных тестов order-service. Версия 6 совпадает
+        # с той, что в docker-compose.yml и в helm-чарте: тесты не должны
+        # проходить на движке, которого нет в продакшене.
+        uses: supercharge/mongodb-github-action@1.11.0
+        with:
+          mongodb-version: 6.0
+
       - name: Build order-service (.NET)
         working-directory: services/order-service
         run: dotnet build --nologo --verbosity quiet
+
+      - name: Test order-service (.NET)
+        working-directory: services/order-service
+        env:
+          TEST_MONGO_URL: mongodb://localhost:27017
+        run: |
+          set -euo pipefail
+
+          dotnet test tests/OrderService.Tests/OrderService.Tests.csproj \
+            --no-build --nologo \
+            --logger "trx;LogFileName=order-tests.trx" \
+            --results-directory "$RUNNER_TEMP/testresults"
+
+          # Тесты, которым нужна MongoDB, пропускаются, если сервис не поднялся.
+          # Молчаливый пропуск опаснее падения: зелёная сборка выглядела бы как
+          # успех, хотя переходы статусов никто не проверил. Поэтому при
+          # недоступной базе шаг падает явно.
+          trx="$RUNNER_TEMP/testresults/order-tests.trx"
+          skipped="$(grep -o '<UnitTestResult[^>]*outcome="NotExecuted"' "$trx" | wc -l || true)"
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped тестов пропущено, хотя MongoDB должна была быть доступна"
+            grep -o 'testName="[^"]*"[^>]*outcome="NotExecuted"' "$trx" | sed 's/^/  /' || true
+            exit 1
+          fi
+          echo "все тесты order-service выполнены, пропусков нет"
 
   check-scripts:
     name: Validate automation scripts

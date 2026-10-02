@@ -15,6 +15,10 @@ build/
 *.class
 *.jar
 
+# .NET (order-service и его тесты)
+bin/
+obj/
+
 # Логи
 *.log
 

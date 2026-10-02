@@ -1,10 +1,14 @@
 ARG REGISTRY=mcr.microsoft.com
 FROM ${REGISTRY}/dotnet/sdk:8.0 AS builder
 WORKDIR /source
-COPY *.csproj .
-RUN dotnet restore
+# Явный путь к проекту и к restore: в каталоге сервиса теперь лежит
+# tests/ со своим .csproj, и "dotnet publish" без аргумента перестаёт
+# однозначно выбирать проект. Образ не должен зависеть от того, как
+# MSBuild разберётся с двумя файлами в одной папке.
+COPY OrderService.csproj ./
+RUN dotnet restore OrderService.csproj
 COPY . .
-RUN dotnet publish -c Release -o /app --no-restore
+RUN dotnet publish OrderService.csproj -c Release -o /app --no-restore
 
 ARG REGISTRY=mcr.microsoft.com
 FROM ${REGISTRY}/dotnet/aspnet:8.0
