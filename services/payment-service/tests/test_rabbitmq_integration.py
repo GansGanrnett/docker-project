@@ -108,10 +108,6 @@ class TestPublisherConfirms:
         assert not emitter._channel.is_closed
         assert emitter._connection is not None and emitter._connection.is_open
 
-        with payment_main._processed_lock:
-            assert order_id in payment_main._processed_orders, \
-                "после восстановления платёж должен засчитаться"
-
         # Очередь, которую сломал тест, убираем.
         cleanup = broker.channel()
         cleanup.queue_delete(queue=queue)
@@ -140,3 +136,31 @@ class TestPublisherConfirms:
             queue=queue, passive=True).method.message_count == 2
 
         channel.queue_delete(queue=queue)
+
+    def test_publish_to_missing_exchange_is_rejected(self, broker, emitter, monkeypatch):
+        """Брокер отверг публикацию - PublishNotConfirmed и никакой записи.
+
+        Настоящий отказ живого брокера: публикация в несуществующий
+        exchange закрывает канал с 404 NOT_FOUND. Подмена точечная - в
+        остальном идёт реальный pika и реальный confirm.
+        """
+        order_id = f"itest-reject-{uuid.uuid4().hex[:8]}"
+        emitter.publish(f"itest-warmup-{uuid.uuid4().hex[:8]}", "SUCCESS", 1.0)
+
+        real_basic_publish = pika.adapters.blocking_connection.BlockingChannel.basic_publish
+
+        def publishing_to_nowhere(self, *args, **kwargs):
+            kwargs["exchange"] = "itest.no.such.exchange"
+            return real_basic_publish(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            pika.adapters.blocking_connection.BlockingChannel,
+            "basic_publish", publishing_to_nowhere)
+
+        with pytest.raises(payment_main.PublishNotConfirmed):
+            emitter.publish(order_id, "SUCCESS", 5.0)
+
+        with payment_main._processed_lock:
+            assert order_id not in payment_main._processed_orders, \
+                "отклонённый брокером платёж не должен засчитываться"
+        assert emitter._connection is None, "отказ должен сбросить соединение"

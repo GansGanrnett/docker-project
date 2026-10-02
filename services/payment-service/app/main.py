@@ -22,12 +22,19 @@ PUBLISH_CONFIRM_FAILURES = Counter(
     'Publish attempts rejected by the broker or not confirmed in time'
 )
 
-# Сколько ждём broker confirm. Значение подобрано так, чтобы неповреждённый
-# брокер в том же кластере успевал ответить с большим запасом: RTT до
-# RabbitMQ в k8s - единицы миллисекунд, а confirm батчится между всеми
-# сообщениями, висящими в канале. Значение намеренно НЕ равно heartbeat
-# интервалу: после долгого ожидания confirm соединение может уже истечь.
-CONFIRM_TIMEOUT_SECONDS = 5.0
+# Сколько ждём, пока брокер снимет блокировку публикаций (memory/disk alarm).
+# Значение подобрано так, чтобы неповреждённый брокер в том же кластере
+# успевал ответить с большим запасом: RTT до RabbitMQ в k8s - единицы
+# миллисекунд, а confirm батчится между всеми сообщениями, висящими в
+# канале. Значение намеренно НЕ равно heartbeat интервалу: после долгого
+# ожидания подтверждения соединение может уже истечь.
+#
+# Обратите внимание: это таймаут blocked_connection_timeout, а не таймаут
+# ожидания confirm. pika не предоставляет таймаута на подтверждение -
+# BlockingChannel.basic_publish в confirm-режиме блокируется до ответа
+# брокера. Этот параметр ограничивает единственный ожидаемый сценарий
+# без ответа - заблокированный брокер.
+PUBLISH_TIMEOUT_SECONDS = 5.0
 
 # Как часто прогоняем process_data_events. BlockingConnection отправляет
 # heartbeat только из этого вызова: между публикациями демон брокера
@@ -156,6 +163,14 @@ class PaymentStatusEmitter:
         if not rabbitmq_url:
             raise RuntimeError("RABBITMQ_URL is not set")
         params = pika.URLParameters(rabbitmq_url)
+        # Таймаут на blocked-соединение, а не на confirm. pika не умеет
+        # ограничивать ожидание подтверждения: в confirm-режиме
+        # BlockingChannel.basic_publish сам блокируется до ответа брокера.
+        # Единственный сценарий, где подтверждения не будет, - брокер
+        # заблокировал публикацию alarm'ом (не хватает памяти или диска);
+        # без этого таймаута publish висел бы там вечно, удерживая лок.
+        # Мёртвый брокер отлавливается heartbeat'ом и даёт StreamLostError.
+        params.blocked_connection_timeout = PUBLISH_TIMEOUT_SECONDS
         self._connection = pika.BlockingConnection(params)
         self._connection.add_on_connection_blocked_callback(self._on_blocked)
         self._channel = self._open_channel(self._connection)
@@ -193,32 +208,51 @@ class PaymentStatusEmitter:
 
             routing_key = ROUTING_SUCCESS if status == "SUCCESS" else ROUTING_DECLINED
             payload = {"orderId": order_id, "status": status, "amount": amount}
-            self._channel.basic_publish(
-                exchange=PAYMENT_EXCHANGE,
-                routing_key=routing_key,
-                body=json.dumps(payload),
-                properties=pika.BasicProperties(
-                    delivery_mode=2,  # персистентное сообщение
-                    content_type='application/json',
-                ),
-            )
 
-            # Единственная точка, где клиент может узнать, что событие
-            # дошло. confirm=False - брокер не подтвердил за отведённое
-            # время, значит событие не доставлено и запись в _processed_orders
-            # делать нельзя.
-            if not self._channel.wait_for_confirms(timeout=CONFIRM_TIMEOUT_SECONDS):
+            # В confirm-режиме pika.basic_publish не возвращается, пока
+            # брокер не ответит, и поднимает исключение вместо False:
+            # NackError - брокер отверг сообщение, ConnectionClosedByStream
+            # или AMQPConnectionError - брокер или сеть отвалились, не
+            # доставив подтверждения. Раньше здесь стоял вызов
+            # wait_for_confirms, которого в BlockingChannel нет вовсе:
+            # unit-тесты с заглушкой это скрывали, и первый же запуск
+            # против настоящего брокера упал с AttributeError. Любой из
+            # этих исходов означает одно и то же - 200 клиенту давать
+            # нельзя.
+            #
+            # mandatory=True намеренно не выставлен: он превратил бы
+            # отсутствие очереди под routing key в 503, то есть платёж
+            # зависел бы от готовности консьюмеров. Очереди объявлены ими
+            # же и durable, а непривязанное сообщение - случай пустого
+            # брокера, и бдительность тут стоит дороже, чем сам факт
+            # потери одного события на пустом брокере.
+            try:
+                self._channel.basic_publish(
+                    exchange=PAYMENT_EXCHANGE,
+                    routing_key=routing_key,
+                    body=json.dumps(payload),
+                    properties=pika.BasicProperties(
+                        delivery_mode=2,  # персистентное сообщение
+                        content_type='application/json',
+                    ),
+                )
+            except (pika.exceptions.NackError,
+                    pika.exceptions.AMQPError) as e:
                 PUBLISH_CONFIRM_FAILURES.inc()
                 self._mark_channel_suspect(
-                    f"confirm not received in {CONFIRM_TIMEOUT_SECONDS}s for {routing_key}")
+                    f"{type(e).__name__} on {routing_key}: {e}")
                 raise PublishNotConfirmed(
-                    f"Broker did not confirm {routing_key} for order {order_id}")
+                    f"Broker did not confirm {routing_key} for order {order_id}: {e}")
 
             print(f"[RABBITMQ] Published and confirmed {routing_key} for order {order_id}")
 
 
 class PublishNotConfirmed(RuntimeError):
-    """Брокер не подтвердил публикацию за CONFIRM_TIMEOUT_SECONDS."""
+    """Брокер не подтвердил публикацию: Nack, разрыв соединения или таймаут.
+
+    Означает ровно одно: событие не доставлено, клиенту нельзя отвечать 200
+    и нельзя писать orderId в _processed_orders.
+    """
 
 
 emitter = PaymentStatusEmitter()

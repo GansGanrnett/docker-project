@@ -3,9 +3,9 @@ import pika
 import pytest
 from fastapi import HTTPException
 from main import (
-    CONFIRM_TIMEOUT_SECONDS,
     HEARTBEAT_INTERVAL_SECONDS,
     HEARTBEAT_TIME_LIMIT_SECONDS,
+    PUBLISH_TIMEOUT_SECONDS,
     PaymentRequest,
     PublishNotConfirmed,
     _luhn_valid,
@@ -55,15 +55,22 @@ class TestPaymentRequest:
 
 
 class FakeChannel:
-    """Канал-заглушка: повторяет контракт pika.BlockingChannel для publish."""
+    """Канал-заглушка: повторяет контракт pika.BlockingChannel для publish.
 
-    def __init__(self, confirm_result=True):
+    Контракт важно воспроизвести точно: в confirm-режиме basic_publish не
+    возвращает признак успеха, а поднимает исключение при отказе. Раньше
+    заглушка возвращала False из wait_for_confirms - метода, которого в
+    BlockingChannel нет, - и потому проверяла выдуманный API вместо
+    настоящего. Подпись publish_error повторяет этот контракт: None
+    означает подтверждённую публикацию.
+    """
+
+    def __init__(self, publish_error=None):
         self.is_closed = False
         self.confirmed = False
         self.exchange_declared = False
         self.published = []
-        self.confirm_calls = []
-        self._confirm_result = confirm_result
+        self._publish_error = publish_error
 
     def confirm_delivery(self):
         self.confirmed = True
@@ -73,10 +80,19 @@ class FakeChannel:
 
     def basic_publish(self, **kwargs):
         self.published.append(kwargs)
+        if self._publish_error is not None:
+            raise self._publish_error
 
-    def wait_for_confirms(self, timeout=None):
-        self.confirm_calls.append(timeout)
-        return self._confirm_result
+
+def _nack():
+    """Отказ брокера в подтверждении публикации."""
+    return pika.exceptions.NackError([])
+
+
+def _stream_lost():
+    """Обрыв сокета до получения подтверждения."""
+    return pika.exceptions.ConnectionClosedByBroker(
+        320, "CONNECTION_FORCED - broker saw idle connection")
 
 
 def _emitter_with(channel):
@@ -140,27 +156,57 @@ def _pay(order_id="ord-confirm-1", amount=10.0):
 
 class TestPublisherConfirms:
     def test_confirm_delivery_enabled_on_channel(self):
-        ch = FakeChannel(confirm_result=True)
+        ch = FakeChannel()
         em = _emitter_with(ch)
 
         em.publish("ord-1", "SUCCESS", 10.0)
 
         assert ch.confirmed is True, "канал должен работать в режиме confirm"
 
-    def test_wait_for_confirms_uses_configured_timeout(self):
-        ch = FakeChannel(confirm_result=True)
-        _emitter_with(ch).publish("ord-1", "SUCCESS", 10.0)
+    def test_blocked_timeout_configured_on_connection(self, monkeypatch):
+        captured = {}
 
-        assert ch.confirm_calls == [CONFIRM_TIMEOUT_SECONDS]
+        class CapturingConnection(FakeConnection):
+            def __init__(self, channel):
+                super().__init__(channel)
+                captured["params"] = None
 
-    def test_unconfirmed_publish_raises(self):
-        em = _emitter_with(FakeChannel(confirm_result=False))
+        captured = {}
+
+        class CapturingConnection(FakeConnection):
+            def __init__(self, channel):
+                super().__init__(channel)
+
+        em = emitter.__class__()
+        em._connection = None
+
+        def factory(params):
+            captured["params"] = params
+            return CapturingConnection(FakeChannel())
+
+        monkeypatch.setattr(pika, "BlockingConnection", factory)
+        em._connect()
+
+        params = captured["params"]
+        assert params.blocked_connection_timeout == PUBLISH_TIMEOUT_SECONDS
+        # Значение обязано быть меньше дефолтного heartbeat: пока брокер
+        # держит блокировку, подтверждения не будет, и publish висит.
+        assert params.blocked_connection_timeout < 60
+
+    def test_nack_from_broker_raises(self):
+        em = _emitter_with(FakeChannel(publish_error=_nack()))
+
+        with pytest.raises(PublishNotConfirmed):
+            em.publish("ord-1", "SUCCESS", 10.0)
+
+    def test_lost_connection_before_confirm_raises(self):
+        em = _emitter_with(FakeChannel(publish_error=_stream_lost()))
 
         with pytest.raises(PublishNotConfirmed):
             em.publish("ord-1", "SUCCESS", 10.0)
 
     def test_unconfirmed_publish_discards_channel(self):
-        ch = FakeChannel(confirm_result=False)
+        ch = FakeChannel(publish_error=_nack())
         conn = FakeConnection(ch)
         em = emitter.__class__()
         em._connection = conn
@@ -174,7 +220,7 @@ class TestPublisherConfirms:
         assert conn.is_closed is True
 
     def test_channel_reused_across_publishes(self):
-        ch = FakeChannel(confirm_result=True)
+        ch = FakeChannel()
         conn = FakeConnection(ch)
         em = emitter.__class__()
         em._connection = conn
@@ -192,14 +238,14 @@ class TestPublisherConfirms:
         assert ch.exchange_declared is True
 
     def test_reconnect_after_suspect_channel(self):
-        em = _emitter_with(FakeChannel(confirm_result=False))
+        em = _emitter_with(FakeChannel(publish_error=_nack()))
 
         with pytest.raises(PublishNotConfirmed):
             em.publish("ord-1", "SUCCESS", 10.0)
 
         # Следующий запрос собирает новое соединение и новый канал, и
         # confirm_delivery включается на нём заново.
-        second = FakeChannel(confirm_result=True)
+        second = FakeChannel()
         conn2 = FakeConnection(second)
         em._connection = conn2
         em._channel = em._open_channel(conn2)
@@ -210,7 +256,7 @@ class TestPublisherConfirms:
         assert len(second.published) == 1
 
     def test_publish_uses_declared_exchange_and_persistent_delivery(self):
-        ch = FakeChannel(confirm_result=True)
+        ch = FakeChannel()
         _emitter_with(ch).publish("ord-1", "DECLINED", 42.5)
 
         assert len(ch.published) == 1
@@ -273,7 +319,7 @@ class TestHeartbeat:
 
         # Брокер ожил: следующий publish обязан построить новое соединение
         # с включённым confirm, иначе сервис остался бы с мёртвым сокетом.
-        new_conn = FakeConnection(FakeChannel(confirm_result=True))
+        new_conn = FakeConnection(FakeChannel())
         monkeypatch.setattr(pika, "BlockingConnection", lambda params: new_conn)
 
         em.publish("ord-after-hb", "SUCCESS", 10.0)
@@ -317,7 +363,7 @@ class TestIdempotencyAfterConfirm:
     """Запись в _processed_orders не должна опережать broker confirm."""
 
     def test_confirmed_publish_records_order(self, monkeypatch):
-        monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel(confirm_result=True)))
+        monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel()))
 
         result = _pay()
 
@@ -325,7 +371,8 @@ class TestIdempotencyAfterConfirm:
         assert "ord-confirm-1" in _processed_orders
 
     def test_unconfirmed_publish_returns_503_and_no_record(self, monkeypatch):
-        monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel(confirm_result=False)))
+        monkeypatch.setattr(
+            "main.emitter", _emitter_with(FakeChannel(publish_error=_nack())))
 
         with pytest.raises(HTTPException) as exc:
             _pay()
@@ -338,15 +385,14 @@ class TestIdempotencyAfterConfirm:
 
     def test_retry_after_unconfirmed_publish_is_attempted_again(self, monkeypatch):
         """После 503 клиент повторяет платёж - он не должен получить replay."""
-        ch = FakeChannel(confirm_result=False)
-        monkeypatch.setattr("main.emitter", _emitter_with(ch))
+        monkeypatch.setattr(
+            "main.emitter", _emitter_with(FakeChannel(publish_error=_nack())))
 
         with pytest.raises(HTTPException):
             _pay()
 
         # Брокер оживает, следующая попытка обязана дойти до публикации.
-        ch._confirm_result = True
-        monkeypatch.setattr("main.emitter", _emitter_with(ch))
+        monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel()))
 
         result = _pay()
 
@@ -355,7 +401,7 @@ class TestIdempotencyAfterConfirm:
 
     def test_second_request_after_confirm_is_idempotent_replay(self, monkeypatch):
         """Подтверждённый платёж кэшируется: повтор отдаёт replay без публикации."""
-        ch = FakeChannel(confirm_result=True)
+        ch = FakeChannel()
         monkeypatch.setattr("main.emitter", _emitter_with(ch))
 
         _pay()

@@ -310,8 +310,8 @@ jobs:
             exit 1
           fi
 
-          if [ "$passed" -ne 3 ]; then
-            echo "::error::выполнено $passed интеграционных проверок, ожидалось ровно 3"
+          if [ "$passed" -ne 4 ]; then
+            echo "::error::выполнено $passed интеграционных проверок, ожидалось ровно 4"
             exit 1
           fi
 
