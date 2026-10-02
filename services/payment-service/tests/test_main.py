@@ -3,6 +3,7 @@ import pika
 import pytest
 from fastapi import HTTPException
 from main import (
+    CONNECT_TIMEOUT_SECONDS,
     HEARTBEAT_INTERVAL_SECONDS,
     HEARTBEAT_TIME_LIMIT_SECONDS,
     PUBLISH_TIMEOUT_SECONDS,
@@ -11,7 +12,9 @@ from main import (
     _luhn_valid,
     _processed_orders,
     emitter,
+    health_check,
     process_payment,
+    ready_check,
 )
 from pydantic import ValidationError
 
@@ -280,10 +283,25 @@ class TestHeartbeat:
         assert conn.process_calls == [HEARTBEAT_TIME_LIMIT_SECONDS]
         assert em._connection is conn, "живое соединение не трогаем"
 
-    def test_no_connection_means_no_heartbeat(self):
+    def test_no_connection_reconnects_instead_of_heartbeat(self, monkeypatch):
+        """Без соединения heartbeat не качает - он инициирует переподключение.
+
+        Тест раньше утверждал, что _connection остаётся None. С появлением
+        connect_quietly это уже не контракт: без переподключения /ready не
+        восстановился бы сам, а это ровно то, что чинит #36. Поэтому
+        переподключение заглушено, и проверяется попытка, а не наличие
+        соединения - иначе результат зависел бы от того, слушает ли
+        localhost:5672 в момент прогона. Именно так этот тест и падал в CI:
+        локально брокера нет, в CI он есть.
+        """
         em = emitter.__class__()
+        attempts = []
+        monkeypatch.setattr(em, "connect_quietly", lambda: attempts.append(1))
+
         em._heartbeat_once()  # не должно бросать исключение
-        assert em._connection is None
+
+        assert attempts == [1], "без соединения heartbeat обязан переподключиться"
+        assert em._connection is None, "заглушка не должна создавать соединение"
 
     def test_closed_connection_is_skipped(self):
         conn = FakeConnection(FakeChannel())
@@ -357,6 +375,171 @@ class TestHeartbeat:
         em._stop.set()
         em._heartbeat_loop()  # должен вернуться сразу
         assert em._heartbeat_thread is None
+
+
+class TestReadiness:
+    """/ready обязан отражать состояние соединения с брокером.
+
+    Раньше у сервиса не было /ready вовсе, а единственный /health отвечал 200
+    всегда: kubelet считал под готовым при мёртвом брокере и заливал его
+    трафиком, который уходил в 503 на каждый платёж.
+    """
+
+    def _fresh_emitter(self):
+        """Только что собранный emitter: состояние never, ничего не подключено.
+
+        Имя было _emitter_no_broker, и это обещание было ложным: тело
+        ничего не изолирует от брокера, слушающего localhost:5672.
+        Конструктор не подключается, поэтому состояние всегда never, но
+        полагаться на отсутствие брокера здесь нельзя - если тесту нужен
+        недоступный брокер, он заглушает pika.BlockingConnection.
+        """
+        return emitter.__class__()
+
+    def test_state_starts_as_never(self):
+        assert self._fresh_emitter().connection_state == "never"
+        assert self._fresh_emitter().ever_connected is False
+
+    def test_ready_returns_503_when_never_connected(self, monkeypatch):
+        em = self._fresh_emitter()
+        monkeypatch.setattr("main.emitter", em)
+
+        with pytest.raises(HTTPException) as exc:
+            ready_check()
+
+        assert exc.value.status_code == 503
+        assert "never" in exc.value.detail
+
+    def test_health_returns_200_even_when_never_connected(self):
+        # Liveness не должен зависеть от брокера, иначе kubelet будет
+        # перезапускать исправный под, вместо того чтобы ждать брокер.
+        assert health_check()["status"] == "UP"
+
+    def test_ready_returns_200_after_successful_publish(self, monkeypatch):
+        em = _emitter_with(FakeChannel())
+        monkeypatch.setattr("main.emitter", em)
+
+        em.publish("ord-ready-1", "SUCCESS", 10.0)
+
+        assert em.connection_state == "up"
+        assert em.ever_connected is True
+        assert ready_check()["rabbitmq"] == "up"
+
+    def test_ready_returns_503_when_connection_dies(self, monkeypatch):
+        em = _emitter_with(FakeChannel())
+        monkeypatch.setattr("main.emitter", em)
+        em.publish("ord-ready-2", "SUCCESS", 10.0)
+        assert ready_check()["status"] == "UP"
+
+        em._connection.heartbeat_error = pika.exceptions.ConnectionClosedByBroker(
+            320, "CONNECTION_FORCED - broker saw idle connection")
+        em._heartbeat_once()
+
+        assert em.connection_state == "down"
+        with pytest.raises(HTTPException) as exc:
+            ready_check()
+        assert exc.value.status_code == 503
+
+    def test_ready_returns_503_when_broker_closed_connection_quietly(self, monkeypatch):
+        """Брокер закрыл соединение без исключения в process_data_events."""
+        em = _emitter_with(FakeChannel())
+        monkeypatch.setattr("main.emitter", em)
+        em.publish("ord-ready-3", "SUCCESS", 10.0)
+
+        em._connection.is_closed = True
+        em._heartbeat_once()
+
+        assert em.connection_state == "down"
+        with pytest.raises(HTTPException) as exc:
+            ready_check()
+        assert exc.value.status_code == 503
+
+    def test_ready_returns_200_after_reconnect(self, monkeypatch):
+        em = _emitter_with(FakeChannel())
+        monkeypatch.setattr("main.emitter", em)
+        em.publish("ord-ready-4", "SUCCESS", 10.0)
+        em._connection.heartbeat_error = pika.exceptions.ConnectionClosedByBroker(
+            320, "CONNECTION_FORCED - broker saw idle connection")
+        em._heartbeat_once()
+        assert em.connection_state == "down"
+
+        # Брокер ожил: heartbeat сам переподключается, без входящего
+        # платежа. Иначе под остался бы NotReady навсегда - трафик ведь не
+        # пустят, пока он NotReady.
+        new_conn = FakeConnection(FakeChannel())
+        monkeypatch.setattr(pika, "BlockingConnection", lambda params: new_conn)
+        em._heartbeat_once()
+
+        assert em._connection is new_conn
+        assert em.connection_state == "up"
+        assert ready_check()["status"] == "UP"
+
+    def test_ever_connected_stays_true_after_outage(self, monkeypatch):
+        """_ever_connected - факт истории, а не признак готовности."""
+        em = _emitter_with(FakeChannel())
+        monkeypatch.setattr("main.emitter", em)
+        em.publish("ord-ready-5", "SUCCESS", 10.0)
+        assert em.ever_connected is True
+
+        em._connection.heartbeat_error = pika.exceptions.ConnectionClosedByBroker(
+            320, "CONNECTION_FORCED - broker saw idle connection")
+        em._heartbeat_once()
+
+        assert em.connection_state == "down"
+        assert em.ever_connected is True, "история не должна обнуляться обрывом"
+
+        # Именно поэтому проверять готовность по _ever_connected нельзя:
+        # он остался бы True и /ready отдавал бы 200 на мёртвом брокере.
+        with pytest.raises(HTTPException):
+            ready_check()
+
+    def test_ready_returns_503_when_publish_reports_nack(self, monkeypatch):
+        """Неподтверждённая публикация тоже означает неготовность."""
+        em = _emitter_with(FakeChannel(publish_error=_nack()))
+        monkeypatch.setattr("main.emitter", em)
+
+        with pytest.raises(PublishNotConfirmed):
+            em.publish("ord-ready-6", "SUCCESS", 10.0)
+
+        assert em.connection_state == "down"
+        with pytest.raises(HTTPException) as exc:
+            ready_check()
+        assert exc.value.status_code == 503
+
+    def test_failed_connect_marks_down_and_raises(self, monkeypatch):
+        """Ошибка подключения переводит в down и не остаётся в None."""
+        em = self._fresh_emitter()
+
+        def factory(params):
+            raise pika.exceptions.AMQPConnectionError("broker unreachable")
+
+        monkeypatch.setattr(pika, "BlockingConnection", factory)
+
+        with pytest.raises(pika.exceptions.AMQPConnectionError):
+            em._connect()
+
+        assert em.connection_state == "down"
+        assert em._connection is None
+        assert em._channel is None
+
+    def test_connect_timeout_is_shorter_than_probe_period(self):
+        # Дефолт pika - 10 с, и он совпадает с periodSeconds пробы.
+        # Зависший connect() на один probe равен таймауту пробы, и kubelet
+        # решит, что под мёртв.
+        assert CONNECT_TIMEOUT_SECONDS <= 5.0
+
+    def test_socket_timeout_passed_to_connection(self, monkeypatch):
+        captured = {}
+
+        def factory(params):
+            captured["params"] = params
+            return FakeConnection(FakeChannel())
+
+        monkeypatch.setattr(pika, "BlockingConnection", factory)
+        em = self._fresh_emitter()
+        em._connect()
+
+        assert captured["params"].socket_timeout == CONNECT_TIMEOUT_SECONDS
 
 
 class TestIdempotencyAfterConfirm:

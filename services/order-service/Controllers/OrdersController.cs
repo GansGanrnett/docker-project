@@ -25,11 +25,7 @@ namespace OrderService.Controllers
             _httpClientFactory = httpClientFactory;
         }
 
-        [HttpGet("health")]
-        [AllowAnonymous]
-        public IActionResult Health() => Ok(new { status = "UP", service = "order-service" });
-
-        [HttpPost]
+[HttpPost]
         public async Task<IActionResult> CreateOrder([FromBody] List<OrderItem> items)
         {
             // Username берём из проверенного JWT, а не из доверенного заголовка прокси

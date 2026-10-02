@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
@@ -33,6 +34,22 @@ var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL")
 var mongoClient = new MongoClient(mongoUrl);
 builder.Services.AddSingleton(mongoClient);
 builder.Services.AddSingleton(sp => mongoClient.GetDatabase("order_db").GetCollection<OrderService.Models.Order>("orders"));
+
+// Health-check ходит в базу по IMongoDatabase: проверка должна видеть то же
+// соединение и те же права, что и рабочие запросы сервиса.
+builder.Services.AddSingleton(sp => mongoClient.GetDatabase("order_db"));
+
+// Проверка готовности с предельным временем 3 с. Дефолт драйвера - 30 с
+// (ServerSelectionTimeout), и он втрое больше periodSeconds пробы: подвисание
+// на выбор сервера выглядело бы для kubelet как мёртвый под. Тег "ready"
+// отделяет зависимость от liveness: /health обязан отвечать 200 даже при
+// лежащей базе, иначе kubelet перезапустит под, который в порядке.
+builder.Services.AddHealthChecks()
+    .AddCheck<OrderService.Health.MongoHealthCheck>(
+        "mongo",
+        failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy,
+        tags: new[] { "ready" },
+        timeout: TimeSpan.FromSeconds(3));
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -119,6 +136,22 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// Liveness: процесс жив, зависимости не проверяем. Predicate, отбрасывающий
+// все проверки, - это осознанный отказ от зависимостей: перезапуск под при
+// недоступной базе не помогает, он только множит рестарты, пока база лежит.
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = _ => false,
+});
+
+// Readiness: живое соединение с MongoDB. Недоступная база даёт 503 и под
+// выходит из балансировки, пока MongoDB не вернётся. Именно этот эндпоинт
+// уже упоминался в комментарии к индексу reaper'а выше.
+app.MapHealthChecks("/ready", new HealthCheckOptions
+{
+    Predicate = registration => registration.Tags.Contains("ready"),
+});
 
 // Реальные метрики Prometheus (prometheus-net.AspNetCore) вместо прежнего
 // /metrics, который возвращал захардкоженные значения.

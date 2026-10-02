@@ -9,13 +9,22 @@ RABBITMQ_TEST_URL, в CI она всегда задана (issue #37, F-06/F-07/
 очередям, что и сервисы, и не должны мешать друг другу при повторном
 прогоне на одном брокере.
 """
+import base64
+import json
 import os
+import socket
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 
 import pika
 import pytest
+import uvicorn
+
+import main
 
 RABBITMQ_TEST_URL = os.getenv("RABBITMQ_TEST_URL")
 pytestmark = pytest.mark.skipif(
@@ -219,3 +228,189 @@ class TestPrefetch:
         except Exception:
             pass
         channel.queue_delete(queue=queue)
+
+
+# Management API нужна, чтобы оборвать соединение на стороне брокера.
+# Локально переменной нет - тест пропускается; в CI она всегда задана.
+#
+# Логин в URL не работает: urllib.request.Request оставляет userinfo внутри
+# host ("guest:guest@localhost:15672"), и http.client уходит в getaddrinfo
+# с этим именем - "Name or service not known". Поэтому userinfo вынимается
+# из адреса и превращается в заголовок Authorization, как его и ждёт брокер.
+# Схема и адрес остаются как есть, слэш на конце срезается, иначе склейка
+# base + "/api/overview" дала бы //api/overview.
+_RAW_MANAGEMENT_URL = os.getenv("RABBITMQ_MANAGEMENT_URL") or ""
+RABBITMQ_MANAGEMENT_URL = _RAW_MANAGEMENT_URL.rstrip("/")
+
+if RABBITMQ_MANAGEMENT_URL:
+    _parts = urllib.parse.urlsplit(RABBITMQ_MANAGEMENT_URL)
+    RABBITMQ_MANAGEMENT_URL = urllib.parse.urlunsplit(
+        (_parts.scheme, _parts.netloc.rpartition("@")[2], "", "", ""))
+    _credentials = f"{_parts.username or ''}:{_parts.password or ''}"
+    RABBITMQ_MANAGEMENT_AUTH = "Basic " + base64.b64encode(
+        _credentials.encode()).decode()
+else:
+    RABBITMQ_MANAGEMENT_AUTH = None
+
+
+def _free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _status(url):
+    """HTTP-код ответа, в том числе для 503.
+
+    urllib бросает HTTPError на не-2xx, поэтому 503 из /ready пришлось бы
+    отдельно разворачивать в try/except - тест о пробе готовности не должен
+    этим заниматься.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def _wait_for_status(url, expected, timeout):
+    """Ждёт ожидаемый код возврата, возвращает последний наблюдённый.
+
+    Отдаём последний код, а не True/False: в сообщении об ошибке видно,
+    чем ответил сервис на самом деле, а не просто что не дождались.
+    """
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        last = _status(url)
+        if last == expected:
+            return last
+        time.sleep(0.2)
+    return last
+
+
+def _management(path, method="GET"):
+    request = urllib.request.Request(
+        RABBITMQ_MANAGEMENT_URL + path, method=method,
+        headers={"Authorization": RABBITMQ_MANAGEMENT_AUTH})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        payload = response.read()
+    return json.loads(payload) if payload else None
+
+
+def _wait_for_connections(timeout=20.0):
+    """Ждёт, пока брокер покажет хотя бы одно соединение, возвращает список.
+
+    Management API не работает в реальном времени: статистика собирается
+    с задержкой (по умолчанию раз в 5 секунд), поэтому сразу после
+    коннекта /api/connections может вернуть пустой список, хотя
+    соединение уже есть. Одиночный запрос - это не проверка, а лотерея.
+    """
+    deadline = time.monotonic() + timeout
+    last = []
+    while time.monotonic() < deadline:
+        last = _management("/api/connections") or []
+        if last:
+            return last
+        time.sleep(0.5)
+    return last
+
+
+def _wait_for_management_api(timeout=60.0):
+    """Ждёт готовности management API, возвращает её или последнюю ошибку.
+
+    health-cmd проверяет только AMQP-узел, поэтому management API может
+    подниматься заметно позже.
+
+    Возвращается строка с причиной вместо голого False: "недоступна" и
+    "недоступна, потому что 404" - это разные диагнозы, и тест, который
+    стирает разницу, тратит цикл CI, ничего не сказав.
+    """
+    deadline = time.monotonic() + timeout
+    url = RABBITMQ_MANAGEMENT_URL + "/api/overview"
+    last = "таймаут без единой попытки"
+    while time.monotonic() < deadline:
+        try:
+            _management("/api/overview")
+            return None
+        except urllib.error.HTTPError as error:
+            last = f"HTTP {error.code} на {url}: {error.reason}"
+        except urllib.error.URLError as error:
+            last = f"соединение с {url} не установлено: {error.reason}"
+        except Exception as error:  # noqa: BLE001 - причина нужна в тексте
+            last = f"{type(error).__name__} на {url}: {error}"
+        time.sleep(1.0)
+    return last
+
+
+@pytest.mark.skipif(
+    not RABBITMQ_MANAGEMENT_URL,
+    reason="нужен RABBITMQ_MANAGEMENT_URL: обрыв соединения делает брокер")
+class TestReadinessDuringBrokerOutage:
+    """Нюанс #36: падение зависимости должно отражаться в /ready сразу.
+
+    Unit-тесты проверяют логику на заглушках. Здесь настоящий брокер
+    обрывает соединение сам, и единственный способ узнать, что сервис
+    переживает аварию без перезапуска, - смотреть на живой /ready.
+    """
+
+    def test_ready_drops_then_recovers_without_restart(self):
+        problem = _wait_for_management_api()
+        assert problem is None, (
+            "management API брокера не поднялся - тест не может оборвать "
+            f"соединение так, как это делает реальная авария. Причина: {problem}")
+
+        port = _free_port()
+        previous_url = os.environ.get("RABBITMQ_URL")
+        os.environ["RABBITMQ_URL"] = RABBITMQ_TEST_URL
+        main.consumer_state.reset()
+
+        config = uvicorn.Config(
+            main.app, host="127.0.0.1", port=port,
+            log_level="warning", lifespan="on")
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+
+        base = f"http://127.0.0.1:{port}"
+        try:
+            assert _wait_for_status(f"{base}/ready", 200, 30.0) == 200, (
+                "сервис не стал готов при живом брокере")
+
+            # Снимок до удаления: переподключившийся консьюмер создаст
+            # новое соединение с другим именем, и оно переживёт обрыв.
+            connections = _wait_for_connections()
+            names = [item["name"] for item in connections]
+            assert names, (
+                "у брокера нет ни одного соединения - консьюмер не подключился, "
+                "либо management API не показывает его статистику")
+
+            for name in names:
+                # 404 здесь означает "соединения уже нет", а для цели теста
+                # это то же самое, что удалить его: обрыв должен произойти.
+                try:
+                    _management(
+                        "/api/connections/" + urllib.parse.quote(name, safe=""),
+                        method="DELETE")
+                except urllib.error.HTTPError as error:
+                    if error.code != 404:
+                        raise
+
+            assert _wait_for_status(f"{base}/ready", 503, 30.0) == 503, (
+                "/ready не стал 503 после обрыва соединения с брокером")
+            assert _status(f"{base}/health") == 200, (
+                "liveness не должен падать при обрыве брокера - иначе "
+                "kubelet перезапустит под, который починится сам")
+
+            assert _wait_for_status(f"{base}/ready", 200, 45.0) == 200, (
+                "сервис не вернулся в готовность без перезапуска процесса")
+        finally:
+            server.should_exit = True
+            thread.join(timeout=15)
+            if previous_url is None:
+                os.environ.pop("RABBITMQ_URL", None)
+            else:
+                os.environ["RABBITMQ_URL"] = previous_url
+            main.consumer_state.reset()

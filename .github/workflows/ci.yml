@@ -247,8 +247,26 @@ jobs:
         image: rabbitmq:3.12.7-management
         ports:
           - 5672:5672
+          # 15672 - management API. Нужен интеграционному тесту аварии:
+          # обрыв соединения делает сам брокер (DELETE
+          # /api/connections/{name}), иначе единственный способ
+          # сымитировать пропажу брокера - гадать по таймаутам.
+          # health-cmd проверяет только AMQP-узел, готовность API тест
+          # дожидается сам.
+          - 15672:15672
         options: >-
           --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        # Версия как в docker-compose.yml и base-манифестах: тест
+        # обязан бить по той же версии, что уезжает в прод.
+        image: redis:7.0-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 12
@@ -329,6 +347,7 @@ jobs:
         working-directory: services/analytics-service
         env:
           RABBITMQ_TEST_URL: amqp://guest:guest@localhost:5672/
+          RABBITMQ_MANAGEMENT_URL: http://guest:guest@localhost:15672/
         run: |
           set -euo pipefail
 
@@ -356,11 +375,50 @@ jobs:
             exit 1
           fi
 
-          if [ "$passed" -ne 5 ]; then
-            echo "::error::выполнено $passed интеграционных проверок, ожидалось ровно 5"
+          if [ "$passed" -ne 6 ]; then
+            echo "::error::получено $passed интеграционных тестов, ожидалось 6"
             exit 1
           fi
           echo "маршрутизация DLX, confirms и prefetch проверены на живом брокере"
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '20'
+
+      - name: Test cart-service readiness
+        # Живой процесс: поднимается с недоступным Redis, /ready отдаёт 503,
+        # после появления Redis сам возвращается в готовность. Через
+        # TCP-прокси, который в середине теста начинает форвардить на
+        # настоящий Redis: сменить REDIS_URL у живого процесса нельзя.
+        working-directory: services/cart-service
+        env:
+          REDIS_TEST_URL: redis://localhost:6379
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+
+      - name: Test api-gateway
+        # npm install, а не npm ci: package-lock.json разошёлся с
+        # package.json (express-rate-limit), и ci падал бы на сверке.
+        # Dockerfile делает то же самое.
+        working-directory: services/api-gateway
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+
+      - name: Set up Java
+        uses: actions/setup-java@v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Test auth-service
+        # Проба готовности auth проверяется на узком контексте без
+        # Postgres и без приватного JWT-ключа: проверяется связка health
+        # group с db, а не драйвер.
+        working-directory: services/auth-service
+        run: mvn -B -ntp test
 
       - name: Set up MongoDB
         # Сервис для интеграционных тестов order-service. Версия 6 совпадает

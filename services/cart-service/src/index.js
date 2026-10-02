@@ -27,15 +27,35 @@ const redisClient = createClient({ url: REDIS_URL });
 
 redisClient.on('error', (err) => console.error('[REDIS-ERROR]', err));
 
+// connect() сам ретраит по reconnectStrategy: на недоступный Redis промис
+// не отклоняется, а остаётся pending и повторяет попытки бесконечно
+// (проверено на redis 4.7.1: 26 попыток за 10 с). Поэтому initRedis можно
+// не ждать на старте - сервис поднимается с лежащим Redis и сам оживает,
+// когда тот вернётся. Ошибку ловим на уровне события 'error' выше.
 async function initRedis() {
     await redisClient.connect();
     console.log('[CART-SERVICE] Successfully connected to Redis Cache Container');
 }
 initRedis().catch(console.error);
 
-// Внутренний Healthcheck
+// Liveness: процесс жив, зависимости не проверяем. Должен отвечать 200
+// даже при лежащем Redis, иначе kubelet перезапустит исправный под.
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'UP', service: 'cart-service' });
+});
+
+// Readiness: клиент Redis готов принимать команды.
+// Признак - isReady, а не isOpen: после неудачного connect() isOpen
+// становится true (клиент переходит в режим переподключения), тогда как
+// isReady остаётся false. Проверено на redis 4.7.1.
+app.get('/ready', (req, res) => {
+    const redisReady = redisClient.isReady === true;
+    res.status(redisReady ? 200 : 503).json({
+        status: redisReady ? 'UP' : 'DOWN',
+        service: 'cart-service',
+        dependency: 'redis',
+        redisReady
+    });
 });
 
 // Метрики Prometheus

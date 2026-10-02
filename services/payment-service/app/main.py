@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from typing import Literal
 
 
 @asynccontextmanager
@@ -61,6 +62,12 @@ HEARTBEAT_INTERVAL_SECONDS = 20.0
 # возвратом. Ноль означает "не блокироваться", что и нужно фоновому потоку -
 # он не должен задерживаться на канале публикации.
 HEARTBEAT_TIME_LIMIT_SECONDS = 0
+
+# Таймаут подключения к брокеру. pika по умолчанию ждёт 10 с, но /ready
+# опрашивается kubelet раз в 10 с: при недоступном брокере подвисание на
+# один probe равносильно таймауту пробы, и kubelet решит, что под мёртв.
+# 5 с согласуется с PUBLISH_TIMEOUT_SECONDS и не замедляет восстановление.
+CONNECT_TIMEOUT_SECONDS = 5.0
 # --- HTTP-метрики уровня сервиса -------------------------------------------
 # Раньше сервис отдавал только process_*/python_* из prometheus_client, поэтому
 # в Grafana не было ни latency, ни кодов ответа. Метки route/status добавлены
@@ -195,6 +202,34 @@ class PaymentStatusEmitter:
         self._channel = None
         self._stop = threading.Event()
         self._heartbeat_thread = None
+        # Состояние соединения с брокером - единственный источник правды
+        # для /ready. "never" - успешного подключения ещё не было,
+        # "up" - канал открыт и подтверждён брокером, "down" - соединение
+        # недоступно и следующая публикация обязана переподключиться.
+        #
+        # _ever_connected хранит факт первого успешного коннекта, но как
+        # признак готовности не годится: после обрыва он остаётся True
+        # и /ready продолжал бы врать. Поэтому state, а не _ever_connected.
+        self._current_connection_state: Literal["never", "up", "down"] = "never"
+        self._ever_connected: bool = False
+
+    @property
+    def connection_state(self) -> str:
+        return self._current_connection_state
+
+    @property
+    def ever_connected(self) -> bool:
+        return self._ever_connected
+
+    def _set_state(self, new_state: str, reason: str):
+        """Меняет состояние соединения и логирует только сам переход."""
+        if new_state == self._current_connection_state:
+            return
+        print(f"[RABBITMQ] Connection state: "
+              f"{self._current_connection_state} -> {new_state} ({reason})")
+        self._current_connection_state = new_state
+        if new_state == "up":
+            self._ever_connected = True
 
     def start_heartbeat(self):
         """Запускает фоновый прогон process_data_events.
@@ -229,7 +264,19 @@ class PaymentStatusEmitter:
         publish длится миллисекунды, а ожидание лока ограничено ими же."""
         with self._lock:
             connection = self._connection
-            if connection is None or connection.is_closed:
+            if connection is None:
+                # Соединения нет: брокер мог подняться после неудачного
+                # старта. Без попытки здесь /ready не вернёт 200 никогда -
+                # до первого платежа, а платежа не будет, пока под не Ready
+                # не пустят трафик. Получается замкнутый круг: под вечно
+                # NotReady и мёртвый. Поэтому heartbeat сам и чинит связь.
+                self.connect_quietly()
+                return
+            if connection.is_closed:
+                # Брокер закрыл соединение сам, без исключения в
+                # process_data_events. Раньше этот случай молча
+                # возвращался, и /ready продолжал считать под готовым.
+                self._discard_connection("connection closed by peer")
                 return
             try:
                 connection.process_data_events(time_limit=HEARTBEAT_TIME_LIMIT_SECONDS)
@@ -238,9 +285,9 @@ class PaymentStatusEmitter:
                 # соберёт новое. Раньше мёртвое соединение переживало
                 # простой и давало 503 на первом же запросе после него.
                 print(f"[RABBITMQ-WARN] Heartbeat failed, dropping connection: {e}")
-                self._discard_connection()
+                self._discard_connection(f"heartbeat failed: {type(e).__name__}")
 
-    def _discard_connection(self):
+    def _discard_connection(self, reason: str = "discarded"):
         self._channel = None
         if self._connection is not None:
             try:
@@ -249,9 +296,32 @@ class PaymentStatusEmitter:
             except Exception as e:
                 print(f"[RABBITMQ-WARN] Error while closing connection: {e}")
             self._connection = None
+        self._set_state("down", reason)
+
+    def connect_quietly(self):
+        """Подключается, не поднимая исключение.
+
+        Нужен в двух местах: на старте lifespan и в heartbeat при
+        отсутствии соединения. Сообщение об ошибке не дублируется - сам
+        переход в down печатает _set_state, иначе каждые 20 с в лог шёл бы
+        стек трейсбека.
+        """
+        try:
+            self._connect()
+        except Exception:
+            pass
 
     def _connect(self):
+        """Гарантирует живое соединение с брокером (ensure-шаг).
+
+        Возвращает управление немедленно, если соединение уже есть и оно
+        открыто. Каждый успешный путь переводит состояние в up, любая
+        ошибка - в down, с последующим reconnect при следующей попытке.
+        """
         if self._connection is not None and not self._connection.is_closed:
+            # Соединение уже есть и открыто - значит состояние up, даже если
+            # кто-то собрал emitter в обход _connect.
+            self._set_state("up", "existing connection reused")
             return
 
         rabbitmq_url = os.getenv("RABBITMQ_URL")
@@ -266,9 +336,15 @@ class PaymentStatusEmitter:
         # без этого таймаута publish висел бы там вечно, удерживая лок.
         # Мёртвый брокер отлавливается heartbeat'ом и даёт StreamLostError.
         params.blocked_connection_timeout = PUBLISH_TIMEOUT_SECONDS
-        self._connection = pika.BlockingConnection(params)
-        self._connection.add_on_connection_blocked_callback(self._on_blocked)
-        self._channel = self._open_channel(self._connection)
+        params.socket_timeout = CONNECT_TIMEOUT_SECONDS
+        try:
+            self._connection = pika.BlockingConnection(params)
+            self._connection.add_on_connection_blocked_callback(self._on_blocked)
+            self._channel = self._open_channel(self._connection)
+        except Exception as e:
+            self._discard_connection(f"connect failed: {type(e).__name__}")
+            raise
+        self._set_state("up", "channel open, confirm mode on")
 
     def _open_channel(self, connection):
         # Канал и exchange создаются один раз: повторный exchange_declare
@@ -359,8 +435,14 @@ async def lifespan(app):
 
     Через lifespan, а не на этапе импорта: импорт модуля (в т.ч. тестами)
     не должен поднимать фоновых потоков.
+
+    Стартовое подключение к брокеру - неблокирующее и необязательное: без
+    него состояние оставалось бы "never" до первого платежа, а первый
+    платёж не придёт, пока под не станет Ready. Heartbeat с того момента
+    сам достраивает соединение, как только брокер вернётся.
     """
     emitter.start_heartbeat()
+    emitter.connect_quietly()
     yield
     emitter.stop_heartbeat()
 
@@ -374,7 +456,27 @@ _processed_lock = threading.Lock()
 
 @app.get("/health")
 def health_check():
+    # Liveness: процесс жив, состояние брокера не проверяем. 200 даже при
+    # недоступном RabbitMQ - перезапуск под тут не поможет.
     return {"status": "UP", "service": "payment-service"}
+
+
+@app.get("/ready")
+def ready_check():
+    """Readiness: сервис готов принимать платежи.
+
+    Опирается на _current_connection_state, а не на _ever_connected: факт
+    первого коннекта не говорит о текущем состоянии, и под с оборванным
+    соединением продолжал бы получать трафик и отдавать 503 на каждый
+    платёж. Состояние "never" - брокер ещё ни разу не ответил.
+    """
+    state = emitter.connection_state
+    if state == "up":
+        return {"status": "UP", "service": "payment-service", "rabbitmq": state}
+    raise HTTPException(
+        status_code=503,
+        detail=f"RabbitMQ is not connected (state: {state})",
+    )
 
 
 @app.get("/metrics")
