@@ -116,3 +116,29 @@ helm install order infrastructure/kubernetes/helm-charts/order-service
 
 Если ключи приходят из внешнего хранилища (Vault, External Secrets Operator),
 поставьте `jwt.keygen.enabled=false` и создайте Secret `auth-jwt-keys` заранее.
+
+##  Миграция статусов заказа
+
+До issue #34 заказы записывались со статусом `PendingPayment`. Теперь начальное
+состояние называется `PaymentPending`, а у заказа есть поле `StatusChangedAt` —
+от него отсчитываются 15 минут до `PaymentTimeout`.
+
+В MongoDB остались записи со старым значением. Переводить их нужно один раз:
+
+```bash
+# Dry-run: только считает и печатает, ничего не пишет
+MONGO_URL=mongodb://localhost:27017 \
+  dotnet run --project services/order-service -- migrate-statuses
+
+# Запись
+MONGO_URL=mongodb://localhost:27017 \
+  dotnet run --project services/order-service -- migrate-statuses --yes
+```
+
+Без `--yes` не меняется ни одна запись — это защита от ошибки в фильтре.
+Повторный запуск с `--yes` безопасен: после первого прохода старых значений
+не остаётся.
+
+Новые записи со значением `PaymentPending` создаются уже самим сервисом,
+поэтому запуск до деплоя нового order-service бесполезен: сначала раскатываем
+сервис, потом запускаем миграцию.

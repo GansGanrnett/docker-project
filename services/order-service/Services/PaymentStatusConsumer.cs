@@ -21,21 +21,24 @@ namespace OrderService.Services
         private const string DEAD_LETTER_EXCHANGE = "payment.events.dlx";
         private const string DEAD_LETTER_QUEUE = "orders.payment_statuses.dlq";
 
+        /// <summary>
+        /// Статусы события платёжной системы. Это протокол брокера, а не
+        /// доменная модель заказа, поэтому литералы живут здесь, а не в
+        /// OrderStatuses: там лежат значения, которые пишем в заказ.
+        /// </summary>
+        private const string EVENT_STATUS_SUCCESS = "SUCCESS";
+        private const string EVENT_STATUS_DECLINED = "DECLINED";
+
         private readonly ILogger<PaymentStatusConsumer> _logger;
         private readonly IMongoCollection<Order> _ordersCollection;
         private readonly SemaphoreSlim _processingLock = new SemaphoreSlim(1, 1);
         private IConnection? _connection;
         private IModel? _channel;
 
-        public PaymentStatusConsumer(ILogger<PaymentStatusConsumer> logger)
+        public PaymentStatusConsumer(ILogger<PaymentStatusConsumer> logger, IMongoCollection<Order> ordersCollection)
         {
             _logger = logger;
-
-            var mongoUrl = Environment.GetEnvironmentVariable("MONGO_URL")
-                ?? throw new InvalidOperationException("MONGO_URL is not set");
-            var client = new MongoClient(mongoUrl);
-            var database = client.GetDatabase("order_db");
-            _ordersCollection = database.GetCollection<Order>("orders");
+            _ordersCollection = ordersCollection;
         }
 
         private void InitRabbitMQ()
@@ -117,7 +120,41 @@ namespace OrderService.Services
             }
         }
 
-        private async Task HandleMessageAsync(object? sender, BasicDeliverEventArgs ea)
+        /// <summary>
+        /// Переводит статус события платёжной системы в статус заказа.
+        /// Возвращает null для неизвестного значения: консьюмер обязан такие
+        /// сообщения подтверждать, а не отправлять в DLQ - иначе любой новый
+        /// статус в payment-service превратится в бесконечный поток мёртвых
+        /// сообщений. See #34, вопрос о DLX.
+        /// </summary>
+        internal static string? ResolveTargetStatus(string? eventStatus) => eventStatus switch
+        {
+            EVENT_STATUS_SUCCESS => OrderStatuses.Paid,
+            EVENT_STATUS_DECLINED => OrderStatuses.PaymentDeclined,
+            _ => null
+        };
+
+        /// <summary>
+        /// Применяет переход статуса. Условие Status In Pending в том же
+        /// апдейте, что и запись нового значения, поэтому повторная доставка
+        /// того же события ничего не меняет, а уже финальный статус не
+        /// перебивается более поздним событием.
+        /// </summary>
+        internal async Task<bool> ApplyPaymentEventAsync(string orderId, string targetStatus, CancellationToken cancellationToken)
+        {
+            var filter = Builders<Order>.Filter.And(
+                Builders<Order>.Filter.Eq(o => o.Id, orderId),
+                Builders<Order>.Filter.In(o => o.Status, OrderStatuses.Pending));
+
+            var update = Builders<Order>.Update
+                .Set(o => o.Status, targetStatus)
+                .Set(o => o.StatusChangedAt, DateTime.UtcNow);
+
+            var result = await _ordersCollection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken);
+            return result.ModifiedCount > 0;
+        }
+
+        internal async Task HandleMessageAsync(object? sender, BasicDeliverEventArgs ea)
         {
             var channel = sender is EventingBasicConsumer c ? c.Model : _channel;
             if (channel == null) return;
@@ -131,17 +168,37 @@ namespace OrderService.Services
                 using var doc = JsonDocument.Parse(message);
                 var root = doc.RootElement;
                 var orderId = root.GetProperty("orderId").GetString();
-                var status = root.GetProperty("status").GetString();
+                var eventStatus = root.GetProperty("status").GetString();
 
-                if (!string.IsNullOrEmpty(orderId) && status == "SUCCESS")
+                if (string.IsNullOrEmpty(orderId))
                 {
-                    var filter = Builders<Order>.Filter.Eq(o => o.Id, orderId);
-                    var update = Builders<Order>.Update.Set(o => o.Status, "Paid");
+                    _logger.LogWarning("[RABBITMQ-CONSUMER] Message without orderId, acknowledging. Message: {Message}", message);
+                }
+                else
+                {
+                    var targetStatus = ResolveTargetStatus(eventStatus);
 
-                    var result = await _ordersCollection.UpdateOneAsync(filter, update);
-                    if (result.ModifiedCount > 0)
+                    if (targetStatus == null)
                     {
-                        _logger.LogInformation("[MONGODB] Order {OrderId} status successfully set to Paid.", orderId);
+                        // Неизвестный статус подтверждаем молча: это новое
+                        // событие протокола, а не сбой нашей обработки.
+                        _logger.LogWarning("[RABBITMQ-CONSUMER] Unknown payment event status '{EventStatus}' for order {OrderId}, acknowledging without change.",
+                            eventStatus, orderId);
+                    }
+                    else
+                    {
+                        var changed = await ApplyPaymentEventAsync(orderId, targetStatus, CancellationToken.None);
+                        if (changed)
+                        {
+                            _logger.LogInformation("[MONGODB] Order {OrderId} moved to {Status}.", orderId, targetStatus);
+                        }
+                        else
+                        {
+                            // Заказ уже в финальном статусе либо его не
+                            // существует: повторная доставка или запоздалое
+                            // событие. Переход всё равно подтверждаем.
+                            _logger.LogInformation("[MONGODB] Order {OrderId} not in a pending state, {Status} not applied.", orderId, targetStatus);
+                        }
                     }
                 }
 
@@ -150,7 +207,7 @@ namespace OrderService.Services
             catch (Exception ex)
             {
                 _logger.LogError("[RABBITMQ-CONSUMER-ERROR] Business logic failed: {Message}. Sending to DLQ.", ex.Message);
-                // РќРµ Р·Р°С†РёРєР»РёРІР°РµРј requeue: Р±РёС‚РѕРµ СЃРѕРѕР±С‰РµРЅРёРµ СѓС…РѕРґРёС‚ РІ РјС‘СЂС‚РІСѓСЋ РѕС‡РµСЂРµРґСЊ
+                // Не зацепляем requeue: бесконечные сообщения мёртвут в RabbitMQ.
                 channel.BasicNack(deliveryTag: ea.DeliveryTag, multiple: false, requeue: false);
             }
         }

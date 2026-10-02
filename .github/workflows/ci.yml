@@ -269,9 +269,65 @@ jobs:
         working-directory: services/analytics-service
         run: python -m pytest tests/ -v
 
+      - name: Set up MongoDB
+        # Сервис для интеграционных тестов order-service. Версия 6 совпадает
+        # с той, что в docker-compose.yml и в helm-чарте: тесты не должны
+        # проходить на движке, которого нет в продакшене.
+        uses: supercharge/mongodb-github-action@1.11.0
+        with:
+          mongodb-version: 6.0
+
       - name: Build order-service (.NET)
         working-directory: services/order-service
-        run: dotnet build --nologo --verbosity quiet
+        run: dotnet build OrderService.csproj --nologo --verbosity quiet
+
+      - name: Build order-service tests (.NET)
+        # Тестовый проект лежит в подкаталоге, поэтому сборка сервиса его не
+        # трогает. Без отдельного шага "dotnet test --no-build" ниже прогонял
+        # бы пустую сборку и завершался кодом 0, не выполнив ни одного теста.
+        working-directory: services/order-service
+        run: dotnet build tests/OrderService.Tests/OrderService.Tests.csproj --nologo --verbosity quiet
+
+      - name: Test order-service (.NET)
+        working-directory: services/order-service
+        env:
+          TEST_MONGO_URL: mongodb://localhost:27017
+        run: |
+          set -euo pipefail
+
+          dotnet test tests/OrderService.Tests/OrderService.Tests.csproj \
+            --no-build --nologo \
+            --logger "trx;LogFileName=order-tests.trx" \
+            --results-directory "$RUNNER_TEMP/testresults"
+
+          # Пропуски недопустимы: MongoDB поднят сервисом, и молчаливое
+          # "пропущено 40 тестов" выглядело бы как успех, хотя переходы
+          # статусов не проверил никто. Отсутствие отчёта - тоже провал:
+          # иначе пустой прогой можно пройти весь шаг.
+          trx="$RUNNER_TEMP/testresults/order-tests.trx"
+          if [ ! -f "$trx" ]; then
+            echo "::error::отчёт dotnet test не создан - тесты, вероятно, не запускались"
+            exit 1
+          fi
+
+          passed="$(grep -c 'outcome="Passed"' "$trx" || true)"
+          skipped="$(grep -c 'outcome="NotExecuted"' "$trx" || true)"
+
+          echo "пройдено: $passed, пропущено: $skipped"
+
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped тестов пропущено, хотя MongoDB должна была быть доступна"
+            grep -o 'testName="[^"]*"[^>]*outcome="NotExecuted"' "$trx" | sed 's/^/  /' || true
+            exit 1
+          fi
+
+          # Нижняя граница нужна, чтобы поймать и противоположный случай:
+          # сборка тестов молча сократилась, и шаг проходит, ничего не проверив.
+          if [ "$passed" -lt 56 ]; then
+            echo "::error::выполнено $passed тестов, ожидалось не меньше 56"
+            exit 1
+          fi
+          echo "все тесты order-service выполнены, пропусков нет"
 
   check-scripts:
     name: Validate automation scripts
