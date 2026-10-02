@@ -37,11 +37,22 @@ PAYMENT_EXCHANGE = "payment.events"
 # понадобилось бы x-dead-letter-routing-key="" в аргументах главной очереди.
 DEAD_LETTER_EXCHANGE = "orders.analytics.dlx"
 DEAD_LETTER_QUEUE = "orders.analytics.dlq"
+# Имена DLX и DLQ order-service. Объявляет он их сам, здесь они нужны
+# только чтобы тесты поймали возврат к общему payment.events.dlx: DLQ
+# второго консьюмера не должна ни появляться, ни обвязываться.
+DLQ_PAYMENT = "orders.payment_statuses.dlq"
+DLX_PAYMENT = "orders.payment_statuses.dlx"
 # Blue/green-схема, парно с order-service: новая очередь объявляется рядом со
 # старой orders.analytics, которая остаётся в брокере как durable на прежнем
 # payment.events.dlx. Откат - смена одной константы. Очистка - отдельный
 # коммит после отработки в релизной среде.
 QUEUE = "orders.analytics.v2"
+# Сколько неподтверждённых сообщений брокер имеет право выдать консьюмеру.
+# Без prefetch он отдаёт всю очередь в память процесса, а ack здесь идёт
+# после записи в агрегаты: при всплеске платежей память уезжает, и падение
+# теряет всё неподтверждённое. Единица оставляет в работе ровно одно
+# сообщение (issue #37, F-06/F-07).
+PREFETCH_COUNT = 1
 
 # Агрегаты аналитики: словарь называется aggregates, а не metrics,
 # чтобы не конфликтовать с функцией-эндпоинтом metrics().
@@ -101,6 +112,7 @@ def rabbitmq_consumer():
             # Старая orders.analytics остаётся привязанной к payment.events и
             # накапливает публикации до очистки - для тестового стенда это
             # приемлемо, зато события продолжают доезжать при откате.
+            channel.basic_qos(prefetch_count=PREFETCH_COUNT)
             queue = channel.queue_declare(
                 queue=QUEUE, durable=True,
                 arguments={"x-dead-letter-exchange": DEAD_LETTER_EXCHANGE})

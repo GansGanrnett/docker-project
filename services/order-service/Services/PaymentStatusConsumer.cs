@@ -42,6 +42,15 @@ namespace OrderService.Services
         private const string DEAD_LETTER_QUEUE = "orders.payment_statuses.dlq";
 
         /// <summary>
+        /// Сколько неподтверждённых сообщений брокер имеет право выдать
+        /// консьюмеру. Единица означает: следующее сообщение придёт только
+        /// после ack предыдущего, поэтому память консьюмера не растёт вместе
+        /// с длиной очереди, а обработка одного заказа не упирается в общий
+        /// IModel. Issue #37, F-06/F-07.
+        /// </summary>
+        internal const ushort PREFETCH_COUNT = 1;
+
+        /// <summary>
         /// Статусы события платёжной системы. Это протокол брокера, а не
         /// доменная модель заказа, поэтому литералы живут здесь, а не в
         /// OrderStatuses: там лежат значения, которые пишем в заказ.
@@ -91,8 +100,16 @@ namespace OrderService.Services
             _channel.QueueDeclare(queue: PAYMENT_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: dlqArgs);
             _channel.QueueBind(queue: PAYMENT_QUEUE, exchange: PAYMENT_EXCHANGE, routingKey: ROUTING_PAYMENT_ALL);
 
-            _logger.LogInformation("[RABBITMQ-CONSUMER] Exchange '{Exchange}' bound to queue '{Queue}' with routing key '{Routing}'.",
-                PAYMENT_EXCHANGE, PAYMENT_QUEUE, ROUTING_PAYMENT_ALL);
+            // Без prefetch брокер отдаёт все неподтверждённые сообщения в
+            // память консьюмера, а ack у нас происходит только после записи в
+            // MongoDB. При медленной базе пачка копится в куче, и обрыв
+            // процесса теряет всё, что не подтверждено. prefetch=1 держит
+            // ровно одно сообщение в работе и одновременно снимает гонку за
+            // один IModel между обработчиками (issue #37, F-06/F-07).
+            _channel.BasicQos(0, PREFETCH_COUNT, global: false);
+
+            _logger.LogInformation("[RABBITMQ-CONSUMER] Exchange '{Exchange}' bound to queue '{Queue}' with routing key '{Routing}', prefetch {Prefetch}.",
+                PAYMENT_EXCHANGE, PAYMENT_QUEUE, ROUTING_PAYMENT_ALL, PREFETCH_COUNT);
         }
 
         // MUST be async: BackgroundService.StartAsync awaits this method, so a
