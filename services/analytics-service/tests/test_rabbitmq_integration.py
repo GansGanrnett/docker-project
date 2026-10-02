@@ -9,6 +9,7 @@ RABBITMQ_TEST_URL, в CI она всегда задана (issue #37, F-06/F-07/
 очередям, что и сервисы, и не должны мешать друг другу при повторном
 прогоне на одном брокере.
 """
+import base64
 import json
 import os
 import socket
@@ -232,11 +233,24 @@ class TestPrefetch:
 # Management API нужна, чтобы оборвать соединение на стороне брокера.
 # Локально переменной нет - тест пропускается; в CI она всегда задана.
 #
-# rstrip("/") обязателен: адрес из CI заканчивается слэшем, а пути ниже
-# начинаются со слэша, и наивная склейка давала //api/overview. На такой
-# запрос брокер отвечает 404, и тест шестьдесят секунд сообщал "management
-# API недоступна", не показывая причину.
-RABBITMQ_MANAGEMENT_URL = (os.getenv("RABBITMQ_MANAGEMENT_URL") or "").rstrip("/")
+# Логин в URL не работает: urllib.request.Request оставляет userinfo внутри
+# host ("guest:guest@localhost:15672"), и http.client уходит в getaddrinfo
+# с этим именем - "Name or service not known". Поэтому userinfo вынимается
+# из адреса и превращается в заголовок Authorization, как его и ждёт брокер.
+# Схема и адрес остаются как есть, слэш на конце срезается, иначе склейка
+# base + "/api/overview" дала бы //api/overview.
+_RAW_MANAGEMENT_URL = os.getenv("RABBITMQ_MANAGEMENT_URL") or ""
+RABBITMQ_MANAGEMENT_URL = _RAW_MANAGEMENT_URL.rstrip("/")
+
+if RABBITMQ_MANAGEMENT_URL:
+    _parts = urllib.parse.urlsplit(RABBITMQ_MANAGEMENT_URL)
+    RABBITMQ_MANAGEMENT_URL = urllib.parse.urlunsplit(
+        (_parts.scheme, _parts.netloc.rpartition("@")[2], "", "", ""))
+    _credentials = f"{_parts.username or ''}:{_parts.password or ''}"
+    RABBITMQ_MANAGEMENT_AUTH = "Basic " + base64.b64encode(
+        _credentials.encode()).decode()
+else:
+    RABBITMQ_MANAGEMENT_AUTH = None
 
 
 def _free_port():
@@ -279,7 +293,8 @@ def _wait_for_status(url, expected, timeout):
 
 def _management(path, method="GET"):
     request = urllib.request.Request(
-        RABBITMQ_MANAGEMENT_URL + path, method=method)
+        RABBITMQ_MANAGEMENT_URL + path, method=method,
+        headers={"Authorization": RABBITMQ_MANAGEMENT_AUTH})
     with urllib.request.urlopen(request, timeout=10) as response:
         payload = response.read()
     return json.loads(payload) if payload else None
