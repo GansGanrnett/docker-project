@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, Response, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
@@ -5,8 +6,6 @@ import pika
 import json
 import os
 import threading
-
-app = FastAPI(title="Payment Service")
 
 PAYMENT_EXCHANGE = "payment.events"
 ROUTING_SUCCESS = "payment.success"
@@ -29,6 +28,18 @@ PUBLISH_CONFIRM_FAILURES = Counter(
 # сообщениями, висящими в канале. Значение намеренно НЕ равно heartbeat
 # интервалу: после долгого ожидания confirm соединение может уже истечь.
 CONFIRM_TIMEOUT_SECONDS = 5.0
+
+# Как часто прогоняем process_data_events. BlockingConnection отправляет
+# heartbeat только из этого вызова: между публикациями демон брокера
+# молчит, соединение истекает по таймауту, и первый запрос после простоя
+# получает 503 на живом на вид приложении (issue #37, F-17). Значение втрое
+# меньше дефолтного heartbeat=60, чтобы между нашими вызовами помещалось
+# два дедлайна брокера - иначе одно опоздание потока уже рвёт соединение.
+HEARTBEAT_INTERVAL_SECONDS = 20.0
+# time_limit для process_data_events: сколько ждать данных брокера перед
+# возвратом. Ноль означает "не блокироваться", что и нужно фоновому потоку -
+# он не должен задерживаться на канале публикации.
+HEARTBEAT_TIME_LIMIT_SECONDS = 0
 
 
 class PaymentRequest(BaseModel):
@@ -71,12 +82,71 @@ class PaymentStatusEmitter:
     соединения ничего не даёт: сокет-то общий, синхронизация всё равно
     нужна. Настоящее решение для высокой нагрузки - отдельный поток с
     очередью публикаций, и это отдельная задача.
+
+    Соединение также обслуживает фоновый heartbeat-поток: без него
+    брокер закрывает соединение во время простоя (issue #37, F-17).
     """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._connection = None
         self._channel = None
+        self._stop = threading.Event()
+        self._heartbeat_thread = None
+
+    def start_heartbeat(self):
+        """Запускает фоновый прогон process_data_events.
+
+        Вызывается на старте приложения, а не лениво из publish: в фоне
+        heartbeat ловит и сетевой обрыв, а не только неиспользуемое
+        соединение, - иначе после простоя первый же запрос падал бы с 503.
+        """
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+        self._stop.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, name="rabbitmq-heartbeat", daemon=True)
+        self._heartbeat_thread.start()
+        print(f"[RABBITMQ] Heartbeat thread started, interval {HEARTBEAT_INTERVAL_SECONDS}s")
+
+    def stop_heartbeat(self):
+        self._stop.set()
+        thread = self._heartbeat_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=HEARTBEAT_INTERVAL_SECONDS + 1)
+        self._heartbeat_thread = None
+
+    def _heartbeat_loop(self):
+        while not self._stop.wait(HEARTBEAT_INTERVAL_SECONDS):
+            self._heartbeat_once()
+
+    def _heartbeat_once(self):
+        """Один проход heartbeat. Тот же _lock, что и у publish: два потока
+        в одном BlockingConnection ломают разбор кадров, а не просто гоняют
+        данные. Поэтому заблокированный publish задержит и heartbeat - но
+        publish длится миллисекунды, а ожидание лока ограничено ими же."""
+        with self._lock:
+            connection = self._connection
+            if connection is None or connection.is_closed:
+                return
+            try:
+                connection.process_data_events(time_limit=HEARTBEAT_TIME_LIMIT_SECONDS)
+            except pika.exceptions.AMQPError as e:
+                # Соединение мертво: рвём его целиком, следующий publish
+                # соберёт новое. Раньше мёртвое соединение переживало
+                # простой и давало 503 на первом же запросе после него.
+                print(f"[RABBITMQ-WARN] Heartbeat failed, dropping connection: {e}")
+                self._discard_connection()
+
+    def _discard_connection(self):
+        self._channel = None
+        if self._connection is not None:
+            try:
+                if not self._connection.is_closed:
+                    self._connection.close()
+            except Exception as e:
+                print(f"[RABBITMQ-WARN] Error while closing connection: {e}")
+            self._connection = None
 
     def _connect(self):
         if self._connection is not None and not self._connection.is_closed:
@@ -113,14 +183,7 @@ class PaymentStatusEmitter:
         # получит 503 и повторит платёж, а идемпотентность по orderId
         # защищает от двойного списания.
         print(f"[RABBITMQ-WARN] Discarding connection: {reason}")
-        self._channel = None
-        if self._connection is not None:
-            try:
-                if not self._connection.is_closed:
-                    self._connection.close()
-            except Exception as e:
-                print(f"[RABBITMQ-WARN] Error while closing connection: {e}")
-            self._connection = None
+        self._discard_connection()
 
     def publish(self, order_id: str, status: str, amount: float):
         with self._lock:
@@ -159,6 +222,21 @@ class PublishNotConfirmed(RuntimeError):
 
 
 emitter = PaymentStatusEmitter()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    """Старт и корректная остановка heartbeat-потока.
+
+    Через lifespan, а не на этапе импорта: импорт модуля (в т.ч. тестами)
+    не должен поднимать фоновых потоков.
+    """
+    emitter.start_heartbeat()
+    yield
+    emitter.stop_heartbeat()
+
+
+app = FastAPI(title="Payment Service", lifespan=lifespan)
 
 # Идемпотентность: повторный запрос с тем же orderId возвращает исходный результат
 _processed_orders = {}
