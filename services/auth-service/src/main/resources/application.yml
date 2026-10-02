@@ -24,6 +24,21 @@ management:
       enabled: true
     health:
       show-details: always
+      # Liveness and readiness get root-level paths so the Helm probes can
+      # use the same two URLs as every other service. "server:" means the
+      # main application port - there is no separate management port here.
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+          additional-path: "server:/health"
+        readiness:
+          # db is the whole point of readiness for auth: the service must
+          # not be sent login traffic it cannot serve. Liveness deliberately
+          # omits it - a database outage must not turn into a restart loop.
+          include: readinessState,db
+          additional-path: "server:/ready"
   metrics:
     distribution:
       # Без этого Micrometer публикует только _count/_sum для
