@@ -58,6 +58,11 @@ func TestReadyEndpointReportsTheSameAsHealth(t *testing.T) {
 // sumRequestsTotal reads the counter straight from the registry instead of
 // scraping text, so an unexpected label set shows up as a wrong number rather
 // than as a string match that quietly stops matching.
+//
+// A *Vec with no children yet exposes no family at all, so an absent family
+// reads as 0 here. That is exactly why the assertions below compare deltas:
+// "the family is missing" and "nothing has been counted" are one and the same
+// observation, and only the second one is worth asserting.
 func sumRequestsTotal(t *testing.T, gatherer prometheus.Gatherer) float64 {
 	t.Helper()
 
@@ -66,20 +71,14 @@ func sumRequestsTotal(t *testing.T, gatherer prometheus.Gatherer) float64 {
 		t.Fatalf("gather metrics: %v", err)
 	}
 
-	found := false
 	total := 0.0
 	for _, family := range families {
 		if family.GetName() != "http_requests_total" {
 			continue
 		}
-		found = true
 		for _, metric := range family.GetMetric() {
 			total += metric.GetCounter().GetValue()
 		}
-	}
-
-	if !found {
-		t.Fatal("http_requests_total was never registered")
 	}
 	return total
 }
@@ -91,6 +90,8 @@ func TestProbeTrafficIsNotCountedAsBusinessTraffic(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	handler := newRootHandler(registry, registry)
 
+	before := sumRequestsTotal(t, registry)
+
 	for i := 0; i < 3; i++ {
 		for _, path := range []string{"/health", "/ready"} {
 			rec := httptest.NewRecorder()
@@ -101,8 +102,9 @@ func TestProbeTrafficIsNotCountedAsBusinessTraffic(t *testing.T) {
 		}
 	}
 
-	if got := sumRequestsTotal(t, registry); got != 0 {
-		t.Fatalf("probe traffic must not be counted, got %v", got)
+	if got := sumRequestsTotal(t, registry); got != before {
+		t.Fatalf("probe traffic must not be counted, counter moved %v -> %v",
+			before, got)
 	}
 
 	rec := httptest.NewRecorder()
@@ -111,8 +113,9 @@ func TestProbeTrafficIsNotCountedAsBusinessTraffic(t *testing.T) {
 		t.Fatalf("/products: expected 200, got %d", rec.Code)
 	}
 
-	if got := sumRequestsTotal(t, registry); got != 1 {
-		t.Fatalf("expected only the /products request to be counted, got %v", got)
+	if got := sumRequestsTotal(t, registry); got != before+1 {
+		t.Fatalf("only the /products request may be counted, got %v, want %v",
+			got, before+1)
 	}
 }
 
@@ -121,13 +124,25 @@ func TestMetricsScrapeIsNotCounted(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	handler := newRootHandler(registry, registry)
 
+	// One business request first. Without it the counter family does not exist
+	// yet, and comparing it against itself would pass even if every scrape
+	// were counted.
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/products", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("/products: expected 200, got %d", rec.Code)
 	}
-	if got := sumRequestsTotal(t, registry); got != 0 {
-		t.Fatalf("scrape must not be counted, got %v", got)
+	before := sumRequestsTotal(t, registry)
+
+	scrape := httptest.NewRecorder()
+	handler.ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if scrape.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", scrape.Code)
+	}
+
+	if got := sumRequestsTotal(t, registry); got != before {
+		t.Fatalf("scrape must not be counted, counter moved %v -> %v",
+			before, got)
 	}
 }
 
