@@ -54,6 +54,10 @@ builder.Services.AddAuthorization();
 // Регистрируем наш RabbitMQ фоновый слушатель событий
 builder.Services.AddHostedService<PaymentStatusConsumer>();
 
+// Переводит заказы без результата платежа в PaymentTimeout. При replicaCount > 1
+// перебор выполняет только держатель блокировки из MongoDB. Issue #34.
+builder.Services.AddHostedService<PaymentTimeoutReaper>();
+
 // HTTP-клиент для обращения к каталогу (цены считаем серверно)
 builder.Services.AddHttpClient("catalog", client =>
 {
