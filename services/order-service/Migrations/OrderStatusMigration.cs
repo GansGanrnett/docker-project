@@ -1,4 +1,3 @@
-using MongoDB.Bson;
 using MongoDB.Driver;
 using OrderService.Models;
 using System;
@@ -25,9 +24,9 @@ namespace OrderService.Migrations
         public long Updated { get; init; }
 
         /// <summary>
-        /// Сколько записей получили StatusChangedAt из CreatedAt. Может быть
-        /// меньше MissingStatusChangedAt: часть записей к моменту записи уже
-        /// имела дату - её поставил другой код.
+        /// Сколько записей мы отправили на заполнение даты. Может быть больше
+        /// Updated: если между чтением и записью заказ сменил статус, его
+        /// апдейт не применится, и updated это покажет, а dated - нет.
         /// </summary>
         public long Dated { get; init; }
 
@@ -61,16 +60,64 @@ namespace OrderService.Migrations
         private const string CollectionName = "orders";
 
         private readonly IMongoCollection<Order> _orders;
-        private readonly IMongoCollection<BsonDocument> _rawOrders;
         private readonly TextWriter _output;
 
         public OrderStatusMigration(IMongoCollection<Order> orders, TextWriter? output = null)
         {
             _orders = orders;
-            // Та же коллекка, но без модели: заполнить дату из другой даты
-            // типизированным Set в драйвере 2.23 нельзя, нужен raw-документ.
-            _rawOrders = orders.Database.GetCollection<BsonDocument>(orders.CollectionNamespace.CollectionName);
             _output = output ?? Console.Out;
+        }
+
+        /// <summary>
+        /// Строка legacy-заказа, прочитанная перед записью. CreatedAt нужен
+        /// как константа, HasStatusChangedAt - чтобы не затереть дату,
+        /// которую проставил кто-то другой.
+        /// </summary>
+        private sealed class LegacyOrderRow
+        {
+            public string? Id { get; init; }
+
+            public DateTime CreatedAt { get; init; }
+
+            public bool HasStatusChangedAt { get; init; }
+        }
+
+        /// <summary>
+        /// Пишет батч и возвращает, сколько записей изменено.
+        ///
+        /// IsOrdered = false: один сбойный документ не должен останавливать
+        /// всю миграцию - остальные батчи всё равно корректны.
+        /// </summary>
+        private async Task<long> WriteBatchAsync(
+            IReadOnlyCollection<WriteModel<Order>> models,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var result = await _orders.BulkWriteAsync(
+                    models,
+                    new BulkWriteOptions { IsOrdered = false },
+                    cancellationToken: cancellationToken);
+
+                return result.ModifiedCount;
+            }
+            catch (MongoBulkWriteException<Order> ex)
+            {
+                // Ошибки не глотаем: тихий частичный прогон хуже явного
+                // падения - иначе миграция отчитается об успехе, а часть
+                // заказов останется в legacy-статусе навсегда.
+                var errors = ex.WriteErrors?.ToList() ?? new List<BulkWriteError>();
+
+                _output.WriteLine(
+                    $"  ERROR: {errors.Count} of {models.Count} updates failed in a batch.");
+
+                foreach (var error in errors)
+                {
+                    _output.WriteLine($"    index {error.Index}: code {error.Code} {error.Message}");
+                }
+
+                throw;
+            }
         }
 
         /// <summary>Запрошена ли миграция вместо обычного старта сервиса.</summary>
@@ -138,71 +185,63 @@ namespace OrderService.Migrations
                 };
             }
 
-            // Пишем дату по документам, а не одним $set: драйвер 2.23 не
-            // умеет поле-из-поля в Set, только константу, а читать
-            // CreatedAt в памяти нельзя - база может быть больше памяти
-            // процесса миграции.
+            // Стратегия "прочитать, затем типизированно записать".
             //
-            // Ключевой момент: перечитываем те же _id, что посчитали
-            // раньше, и фильтр по статусу снимаем. Иначе пришлось бы
-            // считать два раза, а между подсчётом и записью статус мог
-            // бы сменить кто-то ещё: тогда мы переписали бы дату чужому
-            // заказу.
-            var legacyIds = await _orders
+            // Три предыдущие попытки наехали на одну и ту же ловушку:
+            // server-side reference в $set. $ifNull в обычном $set
+            // сохранялся как литерал {"$ifNull": [...]}, строка
+            // "$CreatedAt" - как строка "$CreatedAt" (сервер разворачивает
+            // поле-ссылку только в aggregation pipeline, а не в обычном
+            // $set). Обе попытки выглядели как успешная запись, пока
+            // тест не пытался прочитать поле обратно.
+            //
+            // Поэтому здесь нет ни одного выражения на стороне сервера:
+            // CreatedAt читается клиентом и пишется константой того же
+            // типа DateTime, который уже лежит в базе.
+            var legacy = await _orders
                 .Find(legacyFilter)
-                .Project(o => o.Id)
+                .Project(o => new LegacyOrderRow
+                {
+                    Id = o.Id,
+                    CreatedAt = o.CreatedAt,
+                    HasStatusChangedAt = o.StatusChangedAt != null
+                })
                 .ToListAsync(cancellationToken);
 
             long updated = 0;
-
-            // Пачками, а не по одному: миграция на большой базе иначе
-            // делает миллион round-trip'ов. 500 - размер батча MongoDB.
-            foreach (var batch in legacyIds.Where(id => id != null).Chunk(500))
-            {
-                var ids = batch.Select(id => id!).ToList();
-                var batchFilter = Builders<Order>.Filter.In(o => o.Id, ids);
-
-                var statusResult = await _orders.UpdateManyAsync(
-                    batchFilter,
-                    Builders<Order>.Update.Set(o => o.Status, OrderStatuses.PaymentPending),
-                    cancellationToken: cancellationToken);
-                updated += statusResult.ModifiedCount;
-            }
-
             long dated = 0;
 
-            foreach (var batch in legacyIds.Where(id => id != null).Chunk(500))
+            // Пачками по 500: миграция на большой базе иначе делает
+            // миллион round-trip'ов. 500 - размер батча MongoDB.
+            foreach (var batch in legacy.Where(r => r.Id != null).Chunk(500))
             {
-                var ids = batch.Select(id => id!).ToList();
-                var batchFilter = Builders<Order>.Filter.And(
-                    Builders<Order>.Filter.In(o => o.Id, ids),
-                    Builders<Order>.Filter.Exists(o => o.StatusChangedAt, exists: false));
+                var models = new List<WriteModel<Order>>(batch.Length);
 
-                // Строка "$CreatedAt" - это поле-ссылка, которую MongoDB
-                // разворачивает в значение поля на сервере. Типизированный
-                // Set(field, value) в драйвере 2.23 принимает только
-                // константу, поэтому серверное выражение доступно лишь
-                // через raw-документ. Раньше здесь был пайплайн с $ifNull,
-                // но он попадал в поле как литерал {"$ifNull": [...]},
-                // и дата становилась мусором - такой датой нельзя ни
-                // считать возраст заказа, ни сравнивать с дедлайном.
-                // _id обязан быть ObjectId, а не строкой: модель объявляет Id как
-                // string с [BsonRepresentation(BsonType.ObjectId)], поэтому
-                // типизированный фильтр конвертирует сам, а raw-документ -
-                // нет. Со строкой в "$in" сервер не находит ничего и молча
-                // обновляет 0 записей.
-                var idValues = new BsonArray(
-                    ids.Select(i => (BsonValue)new ObjectId(i)));
+                foreach (var row in batch)
+                {
+                    // Фильтр включает и текущий статус: между чтением и
+                    // записью заказ мог сменить кто-то ещё, и переписывать
+                    // дату уже не нашему заказу нельзя.
+                    var filter = Builders<Order>.Filter.And(
+                        Builders<Order>.Filter.Eq(o => o.Id, row.Id),
+                        Builders<Order>.Filter.Eq(o => o.Status, OrderStatuses.LegacyPendingPayment));
 
-                var dateResult = await _rawOrders.UpdateManyAsync(
-                    new BsonDocument
+                    var update = Builders<Order>.Update
+                        .Set(o => o.Status, OrderStatuses.PaymentPending);
+
+                    if (!row.HasStatusChangedAt)
                     {
-                        { "_id", new BsonDocument("$in", idValues) },
-                        { "StatusChangedAt", new BsonDocument("$exists", false) }
-                    },
-                    new BsonDocument("$set", new BsonDocument("StatusChangedAt", "$CreatedAt")),
-                    cancellationToken: cancellationToken);
-                dated += dateResult.ModifiedCount;
+                        // Дату ставим только когда её нет: перетирать
+                        // существующую значило бы откатить историю заказа
+                        // назад.
+                        update = update.Set(o => o.StatusChangedAt, row.CreatedAt);
+                        dated++;
+                    }
+
+                    models.Add(new UpdateOneModel<Order>(filter, update));
+                }
+
+                updated += await WriteBatchAsync(models, cancellationToken);
             }
 
             var skipped = found - updated;
