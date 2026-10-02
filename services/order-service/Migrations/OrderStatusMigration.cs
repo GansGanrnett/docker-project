@@ -24,6 +24,13 @@ namespace OrderService.Migrations
         /// <summary>Сколько записей изменено. Всегда 0 в dry-run.</summary>
         public long Updated { get; init; }
 
+        /// <summary>
+        /// Сколько записей получили StatusChangedAt из CreatedAt. Может быть
+        /// меньше MissingStatusChangedAt: часть записей к моменту записи уже
+        /// имела дату - её поставил другой код.
+        /// </summary>
+        public long Dated { get; init; }
+
         /// <summary>Была ли запись вообще выполнена.</summary>
         public bool Applied { get; init; }
     }
@@ -54,11 +61,15 @@ namespace OrderService.Migrations
         private const string CollectionName = "orders";
 
         private readonly IMongoCollection<Order> _orders;
+        private readonly IMongoCollection<BsonDocument> _rawOrders;
         private readonly TextWriter _output;
 
         public OrderStatusMigration(IMongoCollection<Order> orders, TextWriter? output = null)
         {
             _orders = orders;
+            // Та же коллекка, но без модели: заполнить дату из другой даты
+            // типизированным Set в драйвере 2.23 нельзя, нужен raw-документ.
+            _rawOrders = orders.Database.GetCollection<BsonDocument>(orders.CollectionNamespace.CollectionName);
             _output = output ?? Console.Out;
         }
 
@@ -127,29 +138,70 @@ namespace OrderService.Migrations
                 };
             }
 
-            // Pipeline-апдейт, а не обычный $set: обычный $set не умеет взять значение
-            // другого поля и не умеет "заполнить, только если нет". Оба условия
-            // выполняются одним $ifNull в одном атомарном обновлении, которое
-            // само по себе идемпотентно.
-            var update = new BsonDocumentUpdateDefinition<Order>(
-                new BsonDocument("$set", new BsonDocument
-                {
-                    { "Status", OrderStatuses.PaymentPending },
+            // Пишем дату по документам, а не одним $set: драйвер 2.23 не
+            // умеет поле-из-поля в Set, только константу, а читать
+            // CreatedAt в памяти нельзя - база может быть больше памяти
+            // процесса миграции.
+            //
+            // Ключевой момент: перечитываем те же _id, что посчитали
+            // раньше, и фильтр по статусу снимаем. Иначе пришлось бы
+            // считать два раза, а между подсчётом и записью статус мог
+            // бы сменить кто-то ещё: тогда мы переписали бы дату чужому
+            // заказу.
+            var legacyIds = await _orders
+                .Find(legacyFilter)
+                .Project(o => o.Id)
+                .ToListAsync(cancellationToken);
+
+            long updated = 0;
+
+            // Пачками, а не по одному: миграция на большой базе иначе
+            // делает миллион round-trip'ов. 500 - размер батча MongoDB.
+            foreach (var batch in legacyIds.Where(id => id != null).Chunk(500))
+            {
+                var ids = batch.Select(id => id!).ToList();
+                var batchFilter = Builders<Order>.Filter.In(o => o.Id, ids);
+
+                var statusResult = await _orders.UpdateManyAsync(
+                    batchFilter,
+                    Builders<Order>.Update.Set(o => o.Status, OrderStatuses.PaymentPending),
+                    cancellationToken: cancellationToken);
+                updated += statusResult.ModifiedCount;
+            }
+
+            long dated = 0;
+
+            foreach (var batch in legacyIds.Where(id => id != null).Chunk(500))
+            {
+                var ids = batch.Select(id => id!).ToList();
+                var batchFilter = Builders<Order>.Filter.And(
+                    Builders<Order>.Filter.In(o => o.Id, ids),
+                    Builders<Order>.Filter.Exists(o => o.StatusChangedAt, exists: false));
+
+                // Строка "$CreatedAt" - это поле-ссылка, которую MongoDB
+                // разворачивает в значение поля на сервере. Типизированный
+                // Set(field, value) в драйвере 2.23 принимает только
+                // константу, поэтому серверное выражение доступно лишь
+                // через raw-документ. Раньше здесь был пайплайн с $ifNull,
+                // но он попадал в поле как литерал {"$ifNull": [...]},
+                // и дата становилась мусором - такой датой нельзя ни
+                // считать возраст заказа, ни сравнивать с дедлайном.
+                var dateResult = await _rawOrders.UpdateManyAsync(
+                    new BsonDocument
                     {
-                        "StatusChangedAt",
-                        new BsonDocument("$ifNull", new BsonArray { "$StatusChangedAt", "$CreatedAt" })
-                    }
-                }));
+                        { "_id", new BsonDocument("$in", new BsonArray(ids)) },
+                        { "StatusChangedAt", new BsonDocument("$exists", false) }
+                    },
+                    new BsonDocument("$set", new BsonDocument("StatusChangedAt", "$CreatedAt")),
+                    cancellationToken: cancellationToken);
+                dated += dateResult.ModifiedCount;
+            }
 
-            var result = await _orders.UpdateManyAsync(
-                legacyFilter,
-                update,
-                cancellationToken: cancellationToken);
-
-            var skipped = found - result.ModifiedCount;
+            var skipped = found - updated;
 
             _output.WriteLine("APPLIED");
-            _output.WriteLine($"  updated: {result.ModifiedCount}");
+            _output.WriteLine($"  updated: {updated}");
+            _output.WriteLine($"  dated: {dated} (StatusChangedAt filled from CreatedAt)");
             _output.WriteLine($"  skipped: {skipped} (no longer matched the legacy filter)");
 
             if (skipped > 0)
@@ -161,7 +213,8 @@ namespace OrderService.Migrations
             {
                 Found = found,
                 MissingStatusChangedAt = missing,
-                Updated = result.ModifiedCount,
+                Updated = updated,
+                Dated = dated,
                 Applied = true
             };
         }

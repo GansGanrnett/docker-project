@@ -12,16 +12,16 @@ namespace OrderService.Tests
     /// Тесты перехода статуса по событию оплаты. Требуют MongoDB.
     /// </summary>
     [Collection("mongo")]
-    public class PaymentStatusConsumerTransitionTests
+    public class PaymentStatusConsumerTransitionTests : IDisposable
     {
-        private readonly MongoFixture _mongo;
+        private readonly OrderScope _mongo;
 
         public PaymentStatusConsumerTransitionTests(MongoFixture mongo)
         {
-            _mongo = mongo;
+            _mongo = mongo.NewScope();
         }
 
-        private static PaymentStatusConsumer CreateConsumer(MongoFixture mongo) =>
+        private static PaymentStatusConsumer CreateConsumer(OrderScope mongo) =>
             new PaymentStatusConsumer(NullLogger<PaymentStatusConsumer>.Instance, mongo.Orders);
 
         private static Order PendingOrder() => new Order
@@ -129,5 +129,7 @@ namespace OrderService.Tests
             Assert.True(changed);
             Assert.Equal(OrderStatuses.PaymentDeclined, (await _mongo.FindAsync(id))!.Status);
         }
+
+        public void Dispose() => _mongo.Dispose();
     }
 }

@@ -15,16 +15,16 @@ namespace OrderService.Tests
     /// апдейта. Требуют MongoDB.
     /// </summary>
     [Collection("mongo")]
-    public class ReaperLockTests
+    public class ReaperLockTests : IDisposable
     {
-        private readonly MongoFixture _mongo;
+        private readonly OrderScope _mongo;
 
         public ReaperLockTests(MongoFixture mongo)
         {
-            _mongo = mongo;
+            _mongo = mongo.NewScope();
         }
 
-        private static PaymentTimeoutReaper CreateReaper(MongoFixture mongo) =>
+        private static PaymentTimeoutReaper CreateReaper(OrderScope mongo) =>
             new PaymentTimeoutReaper(NullLogger<PaymentTimeoutReaper>.Instance, mongo.Orders);
 
         [MongoFact]
@@ -129,5 +129,7 @@ namespace OrderService.Tests
             public string Holder { get; set; } = default!;
             public DateTime ExpiresAt { get; set; }
         }
+
+        public void Dispose() => _mongo.Dispose();
     }
 }

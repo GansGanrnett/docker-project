@@ -78,13 +78,13 @@ namespace OrderService.Tests
     /// Требуют MongoDB.
     /// </summary>
     [Collection("mongo")]
-    public class OrderStatusMigrationTests
+    public class OrderStatusMigrationTests : IDisposable
     {
-        private readonly MongoFixture _mongo;
+        private readonly OrderScope _mongo;
 
         public OrderStatusMigrationTests(MongoFixture mongo)
         {
-            _mongo = mongo;
+            _mongo = mongo.NewScope();
         }
 
         private OrderStatusMigration CreateMigration(out StringWriter output)
@@ -295,5 +295,7 @@ namespace OrderService.Tests
             Assert.Equal(0, report.Found);
             Assert.Contains("Order status migration", output.ToString());
         }
+
+        public void Dispose() => _mongo.Dispose();
     }
 }

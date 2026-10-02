@@ -114,8 +114,20 @@ namespace OrderService.Controllers
             var response = await client.GetAsync("/products");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync();
-            return JsonSerializer.Deserialize<List<CatalogProduct>>(json) ?? new List<CatalogProduct>();
+
+            // catalog-service отдаёт поля в нижнем регистре (json:"id"),
+            // а System.Text.Json по умолчанию регистр учитывает. Без
+            // этой опции Id приходил нулём, FirstOrDefault по ProductId
+            // не находил ничего, и каждый заказ отклонялся с 400
+            // "Product does not exist in catalog".
+            return JsonSerializer.Deserialize<List<CatalogProduct>>(json, CatalogJsonOptions)
+                   ?? new List<CatalogProduct>();
         }
+
+        private static readonly JsonSerializerOptions CatalogJsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        };
 
         private class CatalogProduct
         {

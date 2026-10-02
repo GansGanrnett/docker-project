@@ -1,16 +1,14 @@
 using MongoDB.Bson;
 using MongoDB.Driver;
-using OrderService.Models;
 using System;
-using System.Threading.Tasks;
 using Xunit;
 
 namespace OrderService.Tests
 {
     /// <summary>
     /// Живая MongoDB на время тестов. Каждый прогон работает в базе с
-    /// уникальным именем, поэтому тесты не мешают друг другу и не задевают
-    /// данные разработчика.
+    /// уникальным именем, поэтому тесты не задевают данные разработчика и
+    /// не мешают друг другу на уровне базы.
     ///
     /// Если MongoDB недоступна, интеграционные тесты пропускаются, а не падают:
     /// без базы проверять переходы статусов нечем, но и рушить сборку из-за
@@ -31,8 +29,8 @@ namespace OrderService.Tests
                 try
                 {
                     var client = new MongoClient(url);
-                    // Проверяем связь сразу: иначе первый упавший тест сообщит
-                    // о нечитаемой ошибке вместо понятной "нет MongoDB".
+                    // Проверяем связь сразу: иначе первый упавший тест сообщил
+                    // бы о нечитаемой ошибке вместо понятной "нет MongoDB".
                     client.GetDatabase("admin").RunCommand<BsonDocument>(
                         new BsonDocument("ping", 1));
 
@@ -57,48 +55,14 @@ namespace OrderService.Tests
 
         public string DatabaseName { get; } = "order_test_unavailable";
 
-        public IMongoCollection<Order> Orders =>
-            Database.GetCollection<Order>("orders");
-
         public IMongoDatabase Database =>
             _database ?? throw new InvalidOperationException("MongoDB is not available");
 
-        /// <summary>Вставляет заказ и возвращает его id.</summary>
-        public async Task<string> InsertOrderAsync(Order order)
-        {
-            await Orders.InsertOneAsync(order);
-            return order.Id!;
-        }
-
-        public Task<Order?> FindAsync(string id) =>
-            Orders.Find(o => o.Id == id).FirstOrDefaultAsync();
-
         /// <summary>
-        /// Читает документ как сырой BSON. Нужен для проверки, что поле
-        /// действительно отсутствует: типизированная модель скрыла бы это,
-        /// вернув null в обоих случаях - и с полем, и без него.
+        /// Новая изолированная область под один тест. Коллекция заказов в ней
+        /// своя, иначе тесты делили бы счётчики и падали бы не по своей вине.
         /// </summary>
-        public Task<BsonDocument?> FindRawAsync(string id) =>
-            Database
-                .GetCollection<BsonDocument>("orders")
-                .Find(Builders<BsonDocument>.Filter.Eq("_id", new ObjectId(id)))
-                .FirstOrDefaultAsync();
-
-        /// <summary>
-        /// Убирает поле StatusChangedAt из документа, минуя типизированную
-        /// модель: присвоение null оставило бы поле со значением null, а
-        /// миграция ищет именно отсутствие поля.
-        /// </summary>
-        public Task UnsetStatusChangedAtAsync(string id) =>
-            Database.GetCollection<BsonDocument>("orders").UpdateOneAsync(
-                Builders<BsonDocument>.Filter.Eq("_id", new ObjectId(id)),
-                Builders<BsonDocument>.Update.Unset("StatusChangedAt"));
-
-        /// <summary>Ставит произвольный статус в обход модели.</summary>
-        public Task SetStatusRawAsync(string id, string status) =>
-            Database.GetCollection<BsonDocument>("orders").UpdateOneAsync(
-                Builders<BsonDocument>.Filter.Eq("_id", new ObjectId(id)),
-                Builders<BsonDocument>.Update.Set("Status", status));
+        public OrderScope NewScope() => new OrderScope(Database);
 
         public void Dispose()
         {
@@ -109,8 +73,6 @@ namespace OrderService.Tests
 
             try
             {
-                // База тестовая и одноразовая: падение при удалении не повод
-                // провалить тест, который уже прошёл.
                 _database!.Client.DropDatabase(DatabaseName);
             }
             catch (MongoException) { }

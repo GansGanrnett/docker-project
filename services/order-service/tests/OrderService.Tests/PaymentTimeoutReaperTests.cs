@@ -16,16 +16,16 @@ namespace OrderService.Tests
     /// трогать не должен. Требуют MongoDB.
     /// </summary>
     [Collection("mongo")]
-    public class PaymentTimeoutReaperTests
+    public class PaymentTimeoutReaperTests : IDisposable
     {
-        private readonly MongoFixture _mongo;
+        private readonly OrderScope _mongo;
 
         public PaymentTimeoutReaperTests(MongoFixture mongo)
         {
-            _mongo = mongo;
+            _mongo = mongo.NewScope();
         }
 
-        private static PaymentTimeoutReaper CreateReaper(MongoFixture mongo) =>
+        private static PaymentTimeoutReaper CreateReaper(OrderScope mongo) =>
             new PaymentTimeoutReaper(NullLogger<PaymentTimeoutReaper>.Instance, mongo.Orders);
 
         private static Order PendingOrder(DateTime? statusChangedAt) => new Order
@@ -178,5 +178,7 @@ namespace OrderService.Tests
                 Builders<Order>.Filter.Eq(o => o.Status, OrderStatuses.PaymentPending));
             Assert.Equal(0, stillPending);
         }
+
+        public void Dispose() => _mongo.Dispose();
     }
 }

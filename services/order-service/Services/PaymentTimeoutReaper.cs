@@ -156,11 +156,15 @@ namespace OrderService.Services
             {
                 result = await _locks.FindOneAndUpdateAsync(filter, update, options, cancellationToken);
             }
-            catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+            catch (MongoCommandException ex) when (IsDuplicateKey(ex))
             {
                 // Документ есть, но держит его другой не истёкший holder:
                 // upsert пытается вставить и упирается в _id. Это не ошибка -
                 // это отказ в захвате.
+                result = null;
+            }
+            catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+            {
                 result = null;
             }
 
@@ -244,5 +248,15 @@ namespace OrderService.Services
 
             await _locks.Indexes.CreateOneAsync(index, cancellationToken: cancellationToken);
         }
+
+        /// <summary>
+        /// Duplicate key приходит от сервера по-разному в зависимости от
+        /// команды: обычный insert/update оборачивается в MongoWriteException,
+        /// а findAndModify - в MongoCommandException, потому что для него
+        /// сервер отвечает ошибкой команды. Ловить надо оба, иначе конкуренция
+        /// за блокировку выглядела бы как падение reaper'а.
+        /// </summary>
+        private static bool IsDuplicateKey(MongoCommandException ex) =>
+            ex.Code == 11000 || ex.CodeName == "DuplicateKey";
     }
 }

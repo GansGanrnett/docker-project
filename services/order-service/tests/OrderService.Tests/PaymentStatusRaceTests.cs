@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
+using MongoDB.Bson;
 using MongoDB.Driver;
 using OrderService.Controllers;
 using OrderService.Models;
@@ -26,13 +27,13 @@ namespace OrderService.Tests
     /// проверить. Требуют MongoDB.
     /// </summary>
     [Collection("mongo")]
-    public class PaymentStatusRaceTests
+    public class PaymentStatusRaceTests : IDisposable
     {
-        private readonly MongoFixture _mongo;
+        private readonly OrderScope _mongo;
 
         public PaymentStatusRaceTests(MongoFixture mongo)
         {
-            _mongo = mongo;
+            _mongo = mongo.NewScope();
         }
 
         private static Order PendingOrder(DateTime? statusChangedAt) => new Order
@@ -43,10 +44,10 @@ namespace OrderService.Tests
             StatusChangedAt = statusChangedAt
         };
 
-        private static PaymentStatusConsumer Consumer(MongoFixture mongo) =>
+        private static PaymentStatusConsumer Consumer(OrderScope mongo) =>
             new PaymentStatusConsumer(NullLogger<PaymentStatusConsumer>.Instance, mongo.Orders);
 
-        private static PaymentTimeoutReaper Reaper(MongoFixture mongo) =>
+        private static PaymentTimeoutReaper Reaper(OrderScope mongo) =>
             new PaymentTimeoutReaper(NullLogger<PaymentTimeoutReaper>.Instance, mongo.Orders);
 
         [MongoFact]
@@ -145,6 +146,8 @@ namespace OrderService.Tests
                 Builders<Order>.Filter.Eq(o => o.Status, OrderStatuses.PaymentTimeout));
             Assert.Equal(20, timedOut);
         }
+
+        public void Dispose() => _mongo.Dispose();
     }
 
     /// <summary>
@@ -158,13 +161,13 @@ namespace OrderService.Tests
     /// чтобы проверялся настоящий путь создания заказа. Требуют MongoDB.
     /// </summary>
     [Collection("mongo")]
-    public class OrderIdFilterTests
+    public class OrderIdFilterTests : IDisposable
     {
-        private readonly MongoFixture _mongo;
+        private readonly OrderScope _mongo;
 
         public OrderIdFilterTests(MongoFixture mongo)
         {
-            _mongo = mongo;
+            _mongo = mongo.NewScope();
         }
 
         private sealed class StubHttpClientFactory : IHttpClientFactory
@@ -225,7 +228,7 @@ namespace OrderService.Tests
 
             // В базе _id лежит как ObjectId: проверяем тип напрямую.
             var raw = await _mongo.FindRawAsync(id);
-            Assert.Equal(MongoDB.Bson.BsonType.ObjectId, raw!["_id"].BsonType);
+            Assert.Equal(BsonType.ObjectId, raw!["_id"].BsonType);
 
             var consumer = new PaymentStatusConsumer(
                 NullLogger<PaymentStatusConsumer>.Instance, _mongo.Orders);
@@ -288,9 +291,9 @@ namespace OrderService.Tests
 
             // Перематываем заказ в далеко прошедшее прошлое, чтобы он попал
             // под фильтр, и проверяем по той же строке id.
-            await _mongo.Database.GetCollection<MongoDB.Bson.BsonDocument>("orders").UpdateOneAsync(
-                Builders<MongoDB.Bson.BsonDocument>.Filter.Eq("_id", new MongoDB.Bson.ObjectId(id)),
-                Builders<MongoDB.Bson.BsonDocument>.Update.Set("StatusChangedAt",
+            await _mongo.Raw.UpdateOneAsync(
+                Builders<BsonDocument>.Filter.Eq("_id", new ObjectId(id)),
+                Builders<BsonDocument>.Update.Set("StatusChangedAt",
                     DateTime.UtcNow.AddMinutes(-30)));
 
             var reaper = new PaymentTimeoutReaper(
@@ -299,5 +302,7 @@ namespace OrderService.Tests
             Assert.Equal(1, await reaper.ReapExpiredOrdersAsync(CancellationToken.None));
             Assert.Equal(OrderStatuses.PaymentTimeout, (await _mongo.FindAsync(id))!.Status);
         }
+
+        public void Dispose() => _mongo.Dispose();
     }
 }

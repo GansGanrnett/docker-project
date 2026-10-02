@@ -18,6 +18,8 @@ build/
 # .NET (order-service и его тесты)
 bin/
 obj/
+# Результаты прогонов тестов: dotnet test пишет сюда trx, их читает CI
+TestResults/
 
 # Логи
 *.log
