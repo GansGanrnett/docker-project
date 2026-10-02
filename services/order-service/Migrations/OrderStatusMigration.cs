@@ -1,4 +1,3 @@
-using MongoDB.Bson;
 using MongoDB.Driver;
 using OrderService.Models;
 using System;
@@ -186,20 +185,15 @@ namespace OrderService.Migrations
             // CreatedAt читается клиентом и пишется константой того же
             // типа DateTime, который уже лежит в базе.
             //
-            // Проекция - на BsonDocument, а не на DTO-класс: проекция на
-            // класс без BSON-атрибутов уходит в LINQ to Objects поверх
-            // курсора, и сервер возвращает дефолты молча. Для чтения это
-            // безопасно, потому что ниже значения достаются руками.
-            // Запись при этом остаётся типизированной - raw-BSON нужен
-            // был только на чтение.
+            // Читаем полные документы, без проекции. Проекция тут -
+            // единственное, что принесло проблем: на класс без BSON-атрибутов
+            // драйвер отдаёт дефолты молча, а BsonDocument в проекции в
+            // драйвере 2.23 вообще не переводится в пайплайн и роняет
+            // ExpressionToPipelineStageTranslator. Лишние поля в памяти -
+            // это десятки мегабайт на миграцию, не повод писать код,
+            // который нельзя предсказать.
             var legacy = await _orders
                 .Find(legacyFilter)
-                .Project(o => new BsonDocument
-                {
-                    { "_id", o.Id },
-                    { "CreatedAt", o.CreatedAt },
-                    { "HasStatusChangedAt", o.StatusChangedAt != null }
-                })
                 .ToListAsync(cancellationToken);
 
             long updated = 0;
@@ -207,36 +201,28 @@ namespace OrderService.Migrations
 
             // Пачками по 500: миграция на большой базе иначе делает
             // миллион round-trip'ов. 500 - размер батча MongoDB.
-            foreach (var batch in legacy.Chunk(500))
+            foreach (var batch in legacy.Where(o => o.Id != null).Chunk(500))
             {
                 var models = new List<WriteModel<Order>>(batch.Length);
 
-                foreach (var doc in batch)
+                foreach (var order in batch)
                 {
-                    var id = doc["_id"].AsString;
-
-                    // CreatedAt лежит в UTC, и пишем его тоже в UTC:
-                    // DateTime без Kind приводится драйвером по локальному
-                    // времени, и на машине в другом часовом поясе дата
-                    // съехала бы на несколько часов.
-                    var createdAt = doc["CreatedAt"].ToUniversalTime();
-
                     // Фильтр включает и текущий статус: между чтением и
                     // записью заказ мог сменить кто-то ещё, и переписывать
                     // дату уже не нашему заказу нельзя.
                     var filter = Builders<Order>.Filter.And(
-                        Builders<Order>.Filter.Eq(o => o.Id, id),
+                        Builders<Order>.Filter.Eq(o => o.Id, order.Id),
                         Builders<Order>.Filter.Eq(o => o.Status, OrderStatuses.LegacyPendingPayment));
 
                     var update = Builders<Order>.Update
                         .Set(o => o.Status, OrderStatuses.PaymentPending);
 
-                    if (!doc["HasStatusChangedAt"].ToBoolean())
+                    if (order.StatusChangedAt == null)
                     {
                         // Дату ставим только когда её нет: перетирать
                         // существующую значило бы откатить историю заказа
                         // назад.
-                        update = update.Set(o => o.StatusChangedAt, createdAt);
+                        update = update.Set(o => o.StatusChangedAt, order.CreatedAt.ToUniversalTime());
                         dated++;
                     }
 
