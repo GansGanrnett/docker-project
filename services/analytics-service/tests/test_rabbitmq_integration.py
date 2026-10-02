@@ -231,7 +231,12 @@ class TestPrefetch:
 
 # Management API нужна, чтобы оборвать соединение на стороне брокера.
 # Локально переменной нет - тест пропускается; в CI она всегда задана.
-RABBITMQ_MANAGEMENT_URL = os.getenv("RABBITMQ_MANAGEMENT_URL")
+#
+# rstrip("/") обязателен: адрес из CI заканчивается слэшем, а пути ниже
+# начинаются со слэша, и наивная склейка давала //api/overview. На такой
+# запрос брокер отвечает 404, и тест шестьдесят секунд сообщал "management
+# API недоступна", не показывая причину.
+RABBITMQ_MANAGEMENT_URL = (os.getenv("RABBITMQ_MANAGEMENT_URL") or "").rstrip("/")
 
 
 def _free_port():
@@ -281,19 +286,30 @@ def _management(path, method="GET"):
 
 
 def _wait_for_management_api(timeout=60.0):
-    """Плагин управления поднимается позже самого брокера.
+    """Ждёт готовности management API, возвращает её или последнюю ошибку.
 
-    health-cmd контейнера проверяет только AMQP-узел, поэтому доступность
-    management API - отдельная величина, которую надо дождаться.
+    health-cmd проверяет только AMQP-узел, поэтому management API может
+    подниматься заметно позже.
+
+    Возвращается строка с причиной вместо голого False: "недоступна" и
+    "недоступна, потому что 404" - это разные диагнозы, и тест, который
+    стирает разницу, тратит цикл CI, ничего не сказав.
     """
     deadline = time.monotonic() + timeout
+    url = RABBITMQ_MANAGEMENT_URL + "/api/overview"
+    last = "таймаут без единой попытки"
     while time.monotonic() < deadline:
         try:
             _management("/api/overview")
-            return True
-        except Exception:
-            time.sleep(1.0)
-    return False
+            return None
+        except urllib.error.HTTPError as error:
+            last = f"HTTP {error.code} на {url}: {error.reason}"
+        except urllib.error.URLError as error:
+            last = f"соединение с {url} не установлено: {error.reason}"
+        except Exception as error:  # noqa: BLE001 - причина нужна в тексте
+            last = f"{type(error).__name__} на {url}: {error}"
+        time.sleep(1.0)
+    return last
 
 
 @pytest.mark.skipif(
@@ -308,9 +324,10 @@ class TestReadinessDuringBrokerOutage:
     """
 
     def test_ready_drops_then_recovers_without_restart(self):
-        assert _wait_for_management_api(), (
+        problem = _wait_for_management_api()
+        assert problem is None, (
             "management API брокера не поднялся - тест не может оборвать "
-            "соединение так, как это делает реальная авария")
+            f"соединение так, как это делает реальная авария. Причина: {problem}")
 
         port = _free_port()
         previous_url = os.environ.get("RABBITMQ_URL")
