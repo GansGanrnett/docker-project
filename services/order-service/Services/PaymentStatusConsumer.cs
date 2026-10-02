@@ -16,10 +16,39 @@ namespace OrderService.Services
     public class PaymentStatusConsumer : BackgroundService
     {
         private const string PAYMENT_EXCHANGE = "payment.events";
-        private const string PAYMENT_QUEUE = "orders.payment_statuses";
+
+        // Blue/green-схема. Новая очередь объявляется рядом со старой и
+        // получает собственный DLX. Старая orders.payment_statuses не
+        // удаляется: остаётся в брокере как durable-очередь на прежнем
+        // payment.events.dlx, поэтому откат - это смена одной константы,
+        // без пересоздания очередей. Очистка старых очередей - отдельный
+        // коммит после того, как .v2 отработает в релизной среде.
+        private const string PAYMENT_QUEUE = "orders.payment_statuses.v2";
         private const string ROUTING_PAYMENT_ALL = "payment.*";
-        private const string DEAD_LETTER_EXCHANGE = "payment.events.dlx";
+
+        // DLX теперь свой на каждый консьюмер. Общий payment.events.dlx был
+        // fanout на две DLQ, и отказ одного консьюмера уводил его сообщения
+        // в DLQ другого (issue #37, F-06).
+        //
+        // Тип остаётся fanout намеренно: у этого exchange ровно один
+        // получатель - своя DLQ. direct здесь ловушка - dead-letter
+        // наследует routing key исходного сообщения (payment.success), а
+        // бинд DLQ идёт с пустым ключом, и сообщение не матчится ни одной
+        // очереди и удаляется брокером без следа. Чтобы работало direct,
+        // пришлось бы добавлять x-dead-letter-routing-key="" в аргументы
+        // главной очереди. С одной DLQ на exchange выигрыш от direct
+        // отсутствует, а лишний способ выбросить сообщение - нет.
+        private const string DEAD_LETTER_EXCHANGE = "orders.payment_statuses.dlx";
         private const string DEAD_LETTER_QUEUE = "orders.payment_statuses.dlq";
+
+        /// <summary>
+        /// Сколько неподтверждённых сообщений брокер имеет право выдать
+        /// консьюмеру. Единица означает: следующее сообщение придёт только
+        /// после ack предыдущего, поэтому память консьюмера не растёт вместе
+        /// с длиной очереди, а обработка одного заказа не упирается в общий
+        /// IModel. Issue #37, F-06/F-07.
+        /// </summary>
+        internal const ushort PREFETCH_COUNT = 1;
 
         /// <summary>
         /// Статусы события платёжной системы. Это протокол брокера, а не
@@ -63,12 +92,24 @@ namespace OrderService.Services
             _channel.QueueDeclare(queue: DEAD_LETTER_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: null);
             _channel.QueueBind(queue: DEAD_LETTER_QUEUE, exchange: DEAD_LETTER_EXCHANGE, routingKey: "");
 
+            // Обе очереди - старая и .v2 - остаются привязаны к payment.events,
+            // просто старую больше никто не объявляет кодом. Она продолжает
+            // принимать публикации и накапливать их до очистки: для тестового
+            // стенда это приемлемо, и обратная совместимость событий важнее.
             var dlqArgs = new Dictionary<string, object> { { "x-dead-letter-exchange", DEAD_LETTER_EXCHANGE } };
             _channel.QueueDeclare(queue: PAYMENT_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: dlqArgs);
             _channel.QueueBind(queue: PAYMENT_QUEUE, exchange: PAYMENT_EXCHANGE, routingKey: ROUTING_PAYMENT_ALL);
 
-            _logger.LogInformation("[RABBITMQ-CONSUMER] Exchange '{Exchange}' bound to queue '{Queue}' with routing key '{Routing}'.",
-                PAYMENT_EXCHANGE, PAYMENT_QUEUE, ROUTING_PAYMENT_ALL);
+            // Без prefetch брокер отдаёт все неподтверждённые сообщения в
+            // память консьюмера, а ack у нас происходит только после записи в
+            // MongoDB. При медленной базе пачка копится в куче, и обрыв
+            // процесса теряет всё, что не подтверждено. prefetch=1 держит
+            // ровно одно сообщение в работе и одновременно снимает гонку за
+            // один IModel между обработчиками (issue #37, F-06/F-07).
+            _channel.BasicQos(0, PREFETCH_COUNT, global: false);
+
+            _logger.LogInformation("[RABBITMQ-CONSUMER] Exchange '{Exchange}' bound to queue '{Queue}' with routing key '{Routing}', prefetch {Prefetch}.",
+                PAYMENT_EXCHANGE, PAYMENT_QUEUE, ROUTING_PAYMENT_ALL, PREFETCH_COUNT);
         }
 
         // MUST be async: BackgroundService.StartAsync awaits this method, so a
