@@ -210,12 +210,12 @@ class PaymentStatusEmitter:
         # _ever_connected хранит факт первого успешного коннекта, но как
         # признак готовности не годится: после обрыва он остаётся True
         # и /ready продолжал бы врать. Поэтому state, а не _ever_connected.
-        self._connection_state: Literal["never", "up", "down"] = "never"
+        self._current_connection_state: Literal["never", "up", "down"] = "never"
         self._ever_connected: bool = False
 
     @property
     def connection_state(self) -> str:
-        return self._connection_state
+        return self._current_connection_state
 
     @property
     def ever_connected(self) -> bool:
@@ -223,11 +223,11 @@ class PaymentStatusEmitter:
 
     def _set_state(self, new_state: str, reason: str):
         """Меняет состояние соединения и логирует только сам переход."""
-        if new_state == self._connection_state:
+        if new_state == self._current_connection_state:
             return
         print(f"[RABBITMQ] Connection state: "
-              f"{self._connection_state} -> {new_state} ({reason})")
-        self._connection_state = new_state
+              f"{self._current_connection_state} -> {new_state} ({reason})")
+        self._current_connection_state = new_state
         if new_state == "up":
             self._ever_connected = True
 
