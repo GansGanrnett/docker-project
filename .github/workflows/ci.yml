@@ -301,8 +301,11 @@ jobs:
             exit 1
           fi
 
-          passed="$(grep -c '<testcase' "$report" || true)"
-          skipped="$(grep -c '<skipped' "$report" || true)"
+          # grep -c считает строки, а не вхождения: pytest пишет весь
+          # testsuite в одну строку, и -c давал бы 1 на любом числе
+          # тестов. Считаем вхождения явно.
+          passed="$({ grep -o '<testcase' "$report" || true; } | wc -l | tr -d ' ')"
+          skipped="$({ grep -o '<skipped' "$report" || true; } | wc -l | tr -d ' ')"
           echo "интеграционных проверок payment-service выполнено: $passed, пропущено: $skipped"
 
           if [ "$skipped" -ne 0 ]; then
@@ -341,8 +344,11 @@ jobs:
             exit 1
           fi
 
-          passed="$(grep -c '<testcase' "$report" || true)"
-          skipped="$(grep -c '<skipped' "$report" || true)"
+          # grep -c считает строки, а не вхождения: весь testsuite
+          # помещается в одну строку, и -c давал бы 1 независимо от числа
+          # тестов. Считаем вхождения явно.
+          passed="$({ grep -o '<testcase' "$report" || true; } | wc -l | tr -d ' ')"
+          skipped="$({ grep -o '<skipped' "$report" || true; } | wc -l | tr -d ' ')"
           echo "интеграционных проверок выполнено: $passed, пропущено: $skipped"
 
           if [ "$skipped" -ne 0 ]; then
