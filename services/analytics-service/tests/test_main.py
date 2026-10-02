@@ -3,6 +3,7 @@ import json
 import threading
 
 import pytest
+from fastapi import HTTPException
 
 import main
 
@@ -31,6 +32,244 @@ def test_health():
     assert main.health_check() == {"status": "UP", "service": "analytics-service"}
 
 
+@pytest.fixture(autouse=True)
+def clean_consumer_state():
+    """Состояние консьюмера глобальное: сбрасываем до 'never' каждый раз."""
+    main.consumer_state.reset()
+    yield
+    main.consumer_state.reset()
+
+
+class TestReconnectIdempotency:
+    """Нюанс #36: reconnect не должен плодить второго consumer'а.
+
+    Два consumer'а одного сервиса на одной очереди обработали бы каждый
+    платёж дважды, и в агрегатах появились бы дубли - а это уже не метрика,
+    а испорченные данные.
+    """
+
+    def _run_once(self, monkeypatch, channels):
+        """Один проход цикла: поднимает консьюмер и роняет его _StopConsumer."""
+        made = []
+
+        def factory(params):
+            conn = FakeConnection(channels[len(made)])
+            made.append(conn)
+            return conn
+
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
+        monkeypatch.setattr(main.pika, "BlockingConnection", factory)
+        with pytest.raises(_StopConsumer):
+            main.rabbitmq_consumer()
+        return made
+
+    def _run_one_iteration(self, monkeypatch, channel):
+        """Ровно одна итерация цикла: поднимает консьюмер, затем _StopConsumer."""
+        made = []
+
+        def factory(params):
+            conn = FakeConnection(channel)
+            made.append(conn)
+            return conn
+
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
+        monkeypatch.setattr(main.pika, "BlockingConnection", factory)
+        with pytest.raises(_StopConsumer):
+            main.rabbitmq_consumer()
+        return made[0]
+
+    def test_consumer_cancelled_before_reconnect(self, monkeypatch):
+        """Подписка снимается явно, а не вместе с оборванным сокетом."""
+        first = RecordingChannel()
+
+        # Один проход: коннект успешен, start_consuming роняет цикл.
+        conn = self._run_one_iteration(monkeypatch, first)
+
+        # На этом и держится условие "не больше одного consumer'а": перед
+        # следующей попыткой старая подписка уже снята.
+        assert first.cancelled == ["ctag-1"], "basic_cancel обязан снять подписку"
+        assert first.consume_count == 1, "basic_consume вызван ровно один раз"
+        assert conn.is_closed is True, "соединение закрыто до следующей попытки"
+
+    def test_connection_closed_before_next_attempt(self, monkeypatch):
+        made = self._run_once(monkeypatch, [RecordingChannel(), RecordingChannel()])
+
+        assert made[0].close_calls == 1, "старое соединение закрыто до нового"
+        assert made[0].is_closed is True
+
+    def test_begin_refuses_second_consumer(self):
+        """Второй begin при живой подписке обязан быть отклонён."""
+        conn, ch = FakeConnection(RecordingChannel()), RecordingChannel()
+
+        assert main.consumer_state.begin(conn, ch, "ctag-1") is True
+        assert main.consumer_state.begin(FakeConnection(RecordingChannel()),
+                                         RecordingChannel(), "ctag-2") is False
+        assert main.consumer_state.is_active() is True
+
+    def test_state_is_down_between_attempts(self, monkeypatch):
+        """После выхода из start_consuming сервис не готов принимать трафик."""
+        self._run_once(monkeypatch, [RecordingChannel(), RecordingChannel()])
+
+        assert main.consumer_state.state == "down"
+        assert main.consumer_state.is_active() is False
+        assert main.consumer_state.is_ready() is False
+
+    def test_end_survives_dead_channel(self, monkeypatch):
+        """Cleanup на мёртвом канале не должен ронять поток консьюмера."""
+        channel = RecordingChannel()
+        conn = FakeConnection(channel)
+        main.consumer_state.begin(conn, channel, "ctag-1")
+
+        def boom(*args, **kwargs):
+            raise main.pika.exceptions.ChannelClosedByBroker(
+                320, "CONNECTION_FORCED - broker saw idle connection")
+
+        channel.is_closed = True
+        channel.basic_cancel = boom
+
+        main.consumer_state.end("channel died")
+
+        assert main.consumer_state.is_active() is False
+        assert main.consumer_state.state == "down"
+
+
+class TestReadiness:
+    """/ready обязан отражать готовность консьюмера, а не просто процесс."""
+
+    def test_health_is_200_without_broker(self):
+        # Liveness не зависит от брокера: иначе kubelet перезапустит под,
+        # вместо того чтобы ждать возвращения брокера.
+        assert main.health_check()["status"] == "UP"
+
+    def test_ready_returns_503_when_never_connected(self):
+        assert main.consumer_state.state == "never"
+        with pytest.raises(HTTPException) as exc:
+            main.ready_check()
+        assert exc.value.status_code == 503
+        assert "never" in exc.value.detail
+
+    def test_ready_stays_503_when_connect_keeps_failing(self, monkeypatch):
+        """Соединение не поднимается - состояние не должно стать up."""
+        attempts = []
+
+        def factory(params):
+            attempts.append(params)
+            raise main.pika.exceptions.AMQPConnectionError("broker unreachable")
+
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
+        monkeypatch.setattr(main.pika, "BlockingConnection", factory)
+        # Цикл бесконечный, поэтому выход даёт _StopConsumer из паузы между
+        # попытками: без него тест крутился бы вечно.
+        monkeypatch.setattr(
+            main.time, "sleep",
+            lambda s: (_ for _ in ()).throw(_StopConsumer()))
+
+        with pytest.raises(_StopConsumer):
+            main.rabbitmq_consumer()
+
+        assert len(attempts) == 1, "провал коннекта не должен считаться успехом"
+        # Состояние "down", а не "never": cleanup в finally отработал и
+        # честно сообщил, что ничего не работает. Главное - не "up".
+        assert main.consumer_state.state == "down"
+        assert main.consumer_state.ever_connected is False
+        assert main.consumer_state.is_ready() is False
+        with pytest.raises(HTTPException) as exc:
+            main.ready_check()
+        assert exc.value.status_code == 503
+
+    def test_reconnect_recovers_after_broker_returns(self, monkeypatch):
+        """После обрыва и возврата брокера сервис снова становится готов.
+
+        Цикл не должен требовать перезапуска процесса: под, который не
+        Ready, не получает трафик, а трафик и был бы поводом для попытки.
+        """
+        channels = [RecordingChannel(), RecordingChannel()]
+        made = []
+
+        def factory(params):
+            made.append(params)
+            if len(made) == 1:
+                raise main.pika.exceptions.AMQPConnectionError("broker unreachable")
+            return FakeConnection(channels[len(made) - 1])
+
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
+        monkeypatch.setattr(main.pika, "BlockingConnection", factory)
+        monkeypatch.setattr(main.time, "sleep", lambda s: None)
+
+        # Второй коннект успешен, цикл роняет заглушка start_consuming.
+        with pytest.raises(_StopConsumer):
+            main.rabbitmq_consumer()
+
+        assert len(made) == 2, "цикл обязан переподключиться без перезапуска"
+        # Успешный коннект состояние поднял, тест обрывает цикл через
+        # _StopConsumer, поэтому итоговое состояние - down.
+        assert main.consumer_state.state == "down"
+        assert main.consumer_state.ever_connected is True
+        assert channels[0].cancelled == [], "неудачная попытка не создавала подписки"
+        assert channels[1].cancelled == ["ctag-1"], "подписка снята при выходе"
+
+    def test_ready_returns_503_when_consumer_not_active(self):
+        """Живое соединение без подписки не даёт готовности."""
+        channel = RecordingChannel()
+        main.consumer_state.begin(FakeConnection(channel), channel, "ctag-1")
+        main.consumer_state._consumer_active = False
+
+        assert main.consumer_state.state == "up"
+        assert main.consumer_state.is_ready() is False
+        with pytest.raises(HTTPException):
+            main.ready_check()
+
+    def test_ready_returns_200_when_consumer_active(self):
+        channel = RecordingChannel()
+        main.consumer_state.begin(FakeConnection(channel), channel, "ctag-1")
+
+        assert main.consumer_state.is_ready() is True
+        assert main.ready_check()["rabbitmq"] == "up"
+
+    def test_ready_returns_503_after_connection_dies(self):
+        channel = RecordingChannel()
+        main.consumer_state.begin(FakeConnection(channel), channel, "ctag-1")
+
+        main.consumer_state.end("broker closed connection")
+
+        assert main.consumer_state.ever_connected is True, "история не обнуляется"
+        assert main.consumer_state.is_ready() is False
+        with pytest.raises(HTTPException) as exc:
+            main.ready_check()
+        assert exc.value.status_code == 503
+
+    def test_ever_connected_is_not_a_readiness_signal(self):
+        """История о подключении не заменяет текущее состояние.
+
+        Именно на этом ошибалась первая версия: _ever_connected остаётся
+        True после обрыва, и /ready по нему врал бы про мёртвый брокер.
+        """
+        channel = RecordingChannel()
+        main.consumer_state.begin(FakeConnection(channel), channel, "ctag-1")
+        main.consumer_state.end("outage")
+
+        assert main.consumer_state.ever_connected is True
+        assert main.consumer_state.is_ready() is False
+
+    def test_connect_timeout_is_shorter_than_probe_period(self):
+        # Дефолт pika - 10 с, он совпадает с periodSeconds пробы.
+        assert main.CONNECT_TIMEOUT_SECONDS <= 5.0
+
+    def test_socket_timeout_passed_to_connection(self, monkeypatch):
+        captured = {}
+
+        def factory(params):
+            captured["params"] = params
+            return FakeConnection(RecordingChannel())
+
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
+        monkeypatch.setattr(main.pika, "BlockingConnection", factory)
+        with pytest.raises(_StopConsumer):
+            main.rabbitmq_consumer()
+
+        assert captured["params"].socket_timeout == main.CONNECT_TIMEOUT_SECONDS
+
+
 class _StopConsumer(BaseException):
     """Выход из бесконечного retry-цикла консьюмера.
 
@@ -49,6 +288,9 @@ class RecordingChannel:
         self.qos = []
         self.consuming = None
         self.nacks = []
+        self.cancelled = []
+        self.consume_count = 0
+        self.is_closed = False
 
     def exchange_declare(self, **kwargs):
         self.exchanges.append((kwargs.get("exchange"), kwargs.get("exchange_type")))
@@ -64,8 +306,13 @@ class RecordingChannel:
         self.qos.append(kwargs)
 
     def basic_consume(self, **kwargs):
+        self.consume_count += 1
         self.consuming = kwargs.get("queue")
         self.callback = kwargs.get("on_message_callback")
+        return f"ctag-{self.consume_count}"
+
+    def basic_cancel(self, consumer_tag=None):
+        self.cancelled.append(consumer_tag)
 
     def basic_ack(self, **kwargs):
         pass
@@ -90,9 +337,15 @@ class _Method:
 class FakeConnection:
     def __init__(self, channel):
         self._channel = channel
+        self.is_closed = False
+        self.close_calls = 0
 
     def channel(self):
         return self._channel
+
+    def close(self):
+        self.close_calls += 1
+        self.is_closed = True
 
 
 class TestTopology:
