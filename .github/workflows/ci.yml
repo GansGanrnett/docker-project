@@ -279,7 +279,14 @@ jobs:
 
       - name: Build order-service (.NET)
         working-directory: services/order-service
-        run: dotnet build --nologo --verbosity quiet
+        run: dotnet build OrderService.csproj --nologo --verbosity quiet
+
+      - name: Build order-service tests (.NET)
+        # Тестовый проект лежит в подкаталоге, поэтому сборка сервиса его не
+        # трогает. Без отдельного шага "dotnet test --no-build" ниже прогонял
+        # бы пустую сборку и завершался кодом 0, не выполнив ни одного теста.
+        working-directory: services/order-service
+        run: dotnet build tests/OrderService.Tests/OrderService.Tests.csproj --nologo --verbosity quiet
 
       - name: Test order-service (.NET)
         working-directory: services/order-service
@@ -293,15 +300,31 @@ jobs:
             --logger "trx;LogFileName=order-tests.trx" \
             --results-directory "$RUNNER_TEMP/testresults"
 
-          # Тесты, которым нужна MongoDB, пропускаются, если сервис не поднялся.
-          # Молчаливый пропуск опаснее падения: зелёная сборка выглядела бы как
-          # успех, хотя переходы статусов никто не проверил. Поэтому при
-          # недоступной базе шаг падает явно.
+          # Пропуски недопустимы: MongoDB поднят сервисом, и молчаливое
+          # "пропущено 40 тестов" выглядело бы как успех, хотя переходы
+          # статусов не проверил никто. Отсутствие отчёта - тоже провал:
+          # иначе пустой прогой можно пройти весь шаг.
           trx="$RUNNER_TEMP/testresults/order-tests.trx"
-          skipped="$(grep -o '<UnitTestResult[^>]*outcome="NotExecuted"' "$trx" | wc -l || true)"
+          if [ ! -f "$trx" ]; then
+            echo "::error::отчёт dotnet test не создан - тесты, вероятно, не запускались"
+            exit 1
+          fi
+
+          passed="$(grep -c 'outcome="Passed"' "$trx" || true)"
+          skipped="$(grep -c 'outcome="NotExecuted"' "$trx" || true)"
+
+          echo "пройдено: $passed, пропущено: $skipped"
+
           if [ "$skipped" -ne 0 ]; then
             echo "::error::$skipped тестов пропущено, хотя MongoDB должна была быть доступна"
             grep -o 'testName="[^"]*"[^>]*outcome="NotExecuted"' "$trx" | sed 's/^/  /' || true
+            exit 1
+          fi
+
+          # Нижняя граница нужна, чтобы поймать и противоположный случай:
+          # сборка тестов молча сократилась, и шаг проходит, ничего не проверив.
+          if [ "$passed" -lt 56 ]; then
+            echo "::error::выполнено $passed тестов, ожидалось не меньше 56"
             exit 1
           fi
           echo "все тесты order-service выполнены, пропусков нет"
