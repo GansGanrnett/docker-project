@@ -270,6 +270,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 12
+      postgres:
+        # Версия как в base/манифестах (postgres:16-alpine в
+        # payment-postgres.yaml): источник правды платежей (F-22, #41).
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: payment_db_test
+          POSTGRES_USER: payment_user
+          POSTGRES_PASSWORD: payment_password_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U payment_user -d payment_db_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -370,6 +385,42 @@ jobs:
             exit 1
           fi
           echo "SET NX, release и переживание рестарта проверены на живом Redis"
+
+      - name: Test payment-service against PostgreSQL
+        # Источник правды платежей (F-22, #41): миграции Alembic,
+        # уникальность order_id и ON CONFLICT-семантика upsert существуют
+        # только в настоящей БД. Схема поднимается из нуля - `alembic
+        # upgrade head` - ровно как в контейнере при старте.
+        working-directory: services/payment-service
+        env:
+          PAYMENT_DB_TEST_URL: postgresql://payment_user:payment_password_test@localhost:5432/payment_db_test
+        run: |
+          set -euo pipefail
+
+          python -m pytest tests/test_db_integration.py -v \
+            --junitxml="$RUNNER_TEMP/payment-postgres-integration.xml" \
+            | tee "$RUNNER_TEMP/payment-postgres-integration.log"
+
+          report="$RUNNER_TEMP/payment-postgres-integration.xml"
+          if [ ! -f "$report" ]; then
+            echo "::error::JUnit-отчёт PostgreSQL-интеграции не создан"
+            exit 1
+          fi
+
+          passed="$({ grep -o '<testcase' "$report" || true; } | wc -l | tr -d ' ')"
+          skipped="$({ grep -o '<skipped' "$report" || true; } | wc -l | tr -d ' ')"
+          echo "интеграционных проверок PostgreSQL выполнено: $passed, пропущено: $skipped"
+
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped интеграционных проверок пропущено - PostgreSQL должен быть доступен"
+            exit 1
+          fi
+
+          if [ "$passed" -ne 7 ]; then
+            echo "::error::получено $passed тестов, ожидалось ровно 7"
+            exit 1
+          fi
+          echo "миграции, уникальность order_id и upsert проверены на живом PostgreSQL"
 
       - name: Test analytics-service (unit)
         working-directory: services/analytics-service
