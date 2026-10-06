@@ -424,7 +424,7 @@ jobs:
         # Сервис для интеграционных тестов order-service. Версия 6 совпадает
         # с той, что в docker-compose.yml и в helm-чарте: тесты не должны
         # проходить на движке, которого нет в продакшене.
-        uses: supercharge/mongodb-github-action@1.11.0
+        uses: supercharge/mongodb-github-action@1.12.1
         with:
           mongodb-version: 6.0
 
