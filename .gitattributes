@@ -6,7 +6,21 @@ infrastructure/kubernetes/base/pg-hba-configmap.yaml text eol=lf
 # Остальные конфиги — тоже текст, нормализуем переводы строк.
 *.conf text eol=lf
 
-# Shell-скрипты обязаны быть с LF. При core.autocrlf=true Windows-чекаут
-# получал CRLF, и bash падал с "syntax error near unexpected token `do\r'"
-# на любой строке с `do` в конце (напр. foreach по PV в preflight-storage.sh).
+# Shell-скрипты обязаны быть LF. Bash не понимает CRLF: \r попадает в токены,
+# скрипт падает с "syntax error: unexpected end of file", а shellcheck начинает
+# выдавать ложные SC2215. Это не косметика — backup-databases.sh и
+# restore-database.sh едут в ConfigMap и исполняются в поде, то есть CRLF
+# ломает Job целиком. core.autocrlf=true на Windows переписывает рабочее дерево
+# в CRLF при любом checkout, поэтому правило обязано быть здесь, а не зависеть
+# от настроек машины.
 *.sh text eol=lf
+
+# Манифесты Kubernetes едут в kubectl и в ConfigMap. CRLF в block scalar
+# ломает парсинг, а в сгенерированном ConfigMap даёт битый checksum.
+*.yaml text eol=lf
+
+# Сам .gitattributes ни одним правило выше не покрыт, поэтому core.autocrlf=true
+# возвращает в него CRLF при следующем же checkout - и тогда каждая строка
+# правила получает \r, который git не всегда вырезает. Файл, задающий
+# переводы строк, обязан быть в LF.
+.gitattributes text eol=lf

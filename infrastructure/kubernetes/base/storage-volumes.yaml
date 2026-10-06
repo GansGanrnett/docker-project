@@ -201,3 +201,49 @@ spec:
   resources:
     requests:
       storage: 5Gi
+---
+# Target for the backup CronJobs in base/backup-cronjob.yaml. Deliberately a
+# separate volume rather than a subdirectory of one of the database volumes:
+# pruning a retention window must never be able to touch live data, and a dump
+# written next to PGDATA is one bad `rm -rf` away from the database itself.
+#
+# This holds unencrypted dumps including credentials, so the directory is not
+# world readable on the node and the volume must never be exposed through a
+# Service. Moving dumps off the node entirely (S3/MinIO) is the obvious next
+# step; the layout on disk is deliberately flat so that swap is a change to the
+# upload step rather than to the backup scripts.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: backups-pv
+  labels:
+    type: local
+    app: backups
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  volumeMode: Filesystem
+  claimRef:
+    namespace: default
+    name: backups-pvc
+  hostPath:
+    path: "/mnt/data/backups"
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backups-pvc
+  labels:
+    app: backups
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi

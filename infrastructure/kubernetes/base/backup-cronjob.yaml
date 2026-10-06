@@ -1,0 +1,199 @@
+# Backups for the stateful workloads. Two CronJobs instead of one because each
+# database needs its own official client tooling: no custom image has to be
+# built and published just to carry pg_dump and mongodump side by side.
+#
+# Both mount the SAME PVC, but write into separate subdirectories
+# (auth-postgres/, catalog-postgres/, mongodb/), so the two jobs never collide
+# and each keeps its own retention window. The script itself is shared and comes
+# from the backup-scripts ConfigMap, which is generated from
+# infrastructure/kubernetes/scripts/ by render-backup-configmap.sh.
+#
+# Schedule notes:
+#   - 03:17 rather than 03:00, so the job does not land in the same minute as
+#     every other cluster on the planet.
+#   - concurrencyPolicy: Forbid, because two overlapping runs would write into
+#     the same retention window and prune each other's archives.
+#   - startingDeadlineSeconds + backoffLimit, so a cluster that is down at
+#     03:17 still gets its backup once it comes back, and a permanently broken
+#     backup surfaces as a failed Job instead of a silent gap in the archive.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-postgres
+  namespace: default
+  labels:
+    app: backup
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          # Должна совпадать с NetworkPolicy баз данных: network-policies.yaml
+          # разрешает ingress к БД только от app.kubernetes.io/name=<сервис> и
+          # от app=backup. Без этой метки под CronJob умирает на connect.
+          labels:
+            app: backup
+        spec:
+          restartPolicy: OnFailure
+          # The init container hands the backups directory to uid 999, the same
+          # handover the database volumes use: hostPath DirectoryOrCreate leaves
+          # it root:root and both official images run unprivileged.
+          initContainers:
+            - name: init-backups-data
+              image: postgres:15-alpine
+              command:
+                - sh
+                - -c
+                - chown -R 999:999 /backups
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+              securityContext:
+                runAsUser: 0
+                runAsNonRoot: false
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                  add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+          containers:
+            - name: backup
+              image: postgres:15-alpine
+              command: ["/scripts/backup-databases.sh", "postgres"]
+              env:
+                - name: BACKUP_ROOT
+                  value: /backups
+                - name: RETENTION
+                  value: "7"
+                - name: AUTH_DB_HOST
+                  value: auth-postgres-service
+                - name: AUTH_DB_NAME
+                  value: auth_db
+                - name: AUTH_DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: auth-db-user
+                - name: AUTH_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: auth-db-password
+                - name: CATALOG_DB_HOST
+                  value: catalog-postgres-service
+                - name: CATALOG_DB_NAME
+                  value: catalog_db
+                - name: CATALOG_DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: catalog-db-user
+                - name: CATALOG_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: catalog-db-password
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 999
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: backups-pvc
+            - name: scripts
+              configMap:
+                name: backup-scripts
+                defaultMode: 0555
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-mongodb
+  namespace: default
+  labels:
+    app: backup
+spec:
+  schedule: "43 3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          # Должна совпадать с NetworkPolicy баз данных: network-policies.yaml
+          # разрешает ingress к БД только от app.kubernetes.io/name=<сервис> и
+          # от app=backup. Без этой метки под CronJob умирает на connect.
+          labels:
+            app: backup
+        spec:
+          restartPolicy: OnFailure
+          initContainers:
+            - name: init-backups-data
+              image: mongo:6.0
+              command:
+                - sh
+                - -c
+                - chown -R 999:999 /backups
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+              securityContext:
+                runAsUser: 0
+                runAsNonRoot: false
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                  add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+          containers:
+            - name: backup
+              image: mongo:6.0
+              command: ["/scripts/backup-databases.sh", "mongodb"]
+              env:
+                - name: BACKUP_ROOT
+                  value: /backups
+                - name: RETENTION
+                  value: "7"
+                - name: MONGO_HOST
+                  value: order-mongodb-service
+                - name: MONGO_PORT
+                  value: "27017"
+                # Must match the database order-service opens in Program.cs.
+                - name: MONGO_DB
+                  value: order_db
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 999
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: backups-pvc
+            - name: scripts
+              configMap:
+                name: backup-scripts
+                defaultMode: 0555

@@ -7,11 +7,13 @@
 # system-пространств имен).
 #
 # ВАЖНО про проверку: политики применяются только сетевым плагином, который
-# их поддерживает. kindnet - CNI по умолчанию в kind - NetworkPolicy
-# игнорирует: kubectl apply пройдёт, но ограничения работать не будут.
-# Изоляция проверена на kind с Calico v3.28.2 пятью замерами с подов-зондов,
-# несущих метки чартов: разрешённые пары соединяются, чужие блокируются.
-# На kindnet эти манифесты служат проверкой синтаксиса и схемы (kubeconform).
+# их поддерживает. Проверено на kind v0.33.0 с kindnet - ограничения
+# работают и там: под с меткой app=backup соединяется с auth-postgres, под
+# без этой метки зависает на том же порту. Раньше здесь стояло утверждение,
+# что kindnet NetworkPolicy игнорирует, - оно неверно для этой версии.
+# Изоляция проверена также на kind с Calico v3.28.2 пятью замерами с
+# подов-зондов, несущих метки чартов: разрешённые пары соединяются, чужие
+# блокируются.
 #
 # Клиенты адресуются по меткам, которые задают helm-чарты:
 #   app.kubernetes.io/name=<service>, app.kubernetes.io/instance=<Release.Name>
@@ -43,11 +45,17 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: auth-service
+        # backup-postgres CronJob cнимает дампы с того же PVC - без этого
+        # правила ночной backup умирает на connect timeout.
+        - podSelector:
+            matchLabels:
+              app: backup
       ports:
         - protocol: TCP
           port: 5432
   egress:
-    # Только DNS: наружу auth-postgres не ходит.
+    # Только DNS: наружу auth-postgres не ходит. Ответы на уже разрешённый
+    # входящий коннект (в т.ч. от backup-пода) egress-правилами не режутся.
     - to:
         - namespaceSelector: {}
       ports:
@@ -72,6 +80,10 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: catalog-service
+        # backup-postgres CronJob: снимает дампы с того же PVC.
+        - podSelector:
+            matchLabels:
+              app: backup
       ports:
         - protocol: TCP
           port: 5432
@@ -100,6 +112,10 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: order-service
+        # backup-mongodb CronJob: снимает дампы с того же PVC.
+        - podSelector:
+            matchLabels:
+              app: backup
       ports:
         - protocol: TCP
           port: 27017
