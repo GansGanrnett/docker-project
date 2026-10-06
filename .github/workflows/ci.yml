@@ -422,6 +422,45 @@ jobs:
           fi
           echo "миграции, уникальность order_id и upsert проверены на живом PostgreSQL"
 
+      - name: Test payment-service restart does not double charge
+        # Рестарт пода (или Redis) после завершённого платежа не должен
+        # приводить к повторной публикации: Redis пуст, но PostgreSQL
+        # помнит итог и возвращает replay (F-22, #41, шаг 5/5). Тесту
+        # нужны все три зависимости сразу - брокер для подсчёта
+        # публикаций, Redis для потерянной памяти, БД для источника правды.
+        working-directory: services/payment-service
+        env:
+          RABBITMQ_TEST_URL: amqp://guest:guest@localhost:5672/
+          REDIS_TEST_URL: redis://localhost:6379/15
+          PAYMENT_DB_TEST_URL: postgresql://payment_user:payment_password_test@localhost:5432/payment_db_test
+        run: |
+          set -euo pipefail
+
+          python -m pytest tests/test_restart_integration.py -v \
+            --junitxml="$RUNNER_TEMP/payment-restart-integration.xml" \
+            | tee "$RUNNER_TEMP/payment-restart-integration.log"
+
+          report="$RUNNER_TEMP/payment-restart-integration.xml"
+          if [ ! -f "$report" ]; then
+            echo "::error::JUnit-отчёт интеграционного теста рестарта не создан"
+            exit 1
+          fi
+
+          passed="$({ grep -o '<testcase' "$report" || true; } | wc -l | tr -d ' ')"
+          skipped="$({ grep -o '<skipped' "$report" || true; } | wc -l | tr -d ' ')"
+          echo "проверок рестарта payment-service выполнено: $passed, пропущено: $skipped"
+
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped проверок пропущено - зависимости должны быть доступны"
+            exit 1
+          fi
+
+          if [ "$passed" -ne 1 ]; then
+            echo "::error::получено $passed тестов, ожидалось ровно 1"
+            exit 1
+          fi
+          echo "рестарт после завершённого платежа не даёт повторной публикации"
+
       - name: Test analytics-service (unit)
         working-directory: services/analytics-service
         run: python -m pytest tests/ -v --ignore=tests/test_rabbitmq_integration.py
