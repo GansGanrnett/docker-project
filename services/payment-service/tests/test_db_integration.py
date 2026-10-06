@@ -20,9 +20,11 @@ pytestmark = pytest.mark.skipif(
     reason="нужен настоящий PostgreSQL: задайте PAYMENT_DB_TEST_URL")
 
 # URL должен быть виден ДО первого импорта app.core.database: движок и
-# SessionLocal создаются на этапе импорта модуля. CI-шаг прогоняет только
-# этот файл, поэтому здесь он — первый, кто импортирует packages.
-os.environ["PAYMENT_DATABASE_URL"] = PAYMENT_DB_TEST_URL
+# SessionLocal создаются на этапе импорта модуля. В unit-прогоне (без
+# переменной) модуль просто скипается pytestmark'ом ниже, поэтому
+# подменяем окружение только при заданной переменной.
+if PAYMENT_DB_TEST_URL:
+    os.environ["PAYMENT_DATABASE_URL"] = PAYMENT_DB_TEST_URL
 
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
