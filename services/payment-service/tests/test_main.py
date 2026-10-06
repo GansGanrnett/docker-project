@@ -10,12 +10,12 @@ from main import (
     PaymentRequest,
     PublishNotConfirmed,
     _luhn_valid,
-    _processed_orders,
     emitter,
     health_check,
     process_payment,
     ready_check,
 )
+from fakes import FakeStore, FakeStoreWithBarrier
 from pydantic import ValidationError
 
 
@@ -138,14 +138,18 @@ class FakeConnection:
 
 @pytest.fixture(autouse=True)
 def clean_state(monkeypatch):
-    """Пустое состояние идемпотентности и подменённый брокер в каждом тесте."""
+    """Пустое состояние идемпотентности, store-заглушка и брокер-заглушка.
+
+    store в production - синглтон с ленивым подключением к Redis; тестам
+    нужен контролируемый in-memory контракт (fakes.FakeStore). Атомарность
+    самого Redis проверяется на живом сервере в test_redis_integration.py,
+    unit-тесты проверяют поведение хендлера.
+    """
     # Без логина и пароля в URL намеренно: строка с учётными данными в коде
     # ловится проверкой жёстких секретов в CI, а pika подставляет
     # guest/guest сам - для теста разницы нет.
     monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
-    _processed_orders.clear()
-    yield
-    _processed_orders.clear()
+    monkeypatch.setattr("main.store", FakeStore())
 
 
 def _pay(order_id="ord-confirm-1", amount=10.0):
@@ -541,21 +545,49 @@ class TestReadiness:
 
         assert captured["params"].socket_timeout == CONNECT_TIMEOUT_SECONDS
 
+    def test_ready_returns_503_when_redis_down(self, monkeypatch):
+        """Идемпотентность fail-closed: недоступный Redis значит 503, иначе
+        под с упавшим хранилищем заливали бы его повторными платежами."""
+        import main as payment_main
+        em = _emitter_with(FakeChannel())
+        monkeypatch.setattr("main.emitter", em)
+        em.publish("ord-ready-redis", "SUCCESS", 10.0)
+
+        payment_main.store.fail_ping = True
+
+        with pytest.raises(HTTPException) as exc:
+            ready_check()
+        assert exc.value.status_code == 503
+        assert "Redis" in exc.value.detail
+
+    def test_ready_reports_redis_up(self, monkeypatch):
+        import main as payment_main
+        em = _emitter_with(FakeChannel())
+        monkeypatch.setattr("main.emitter", em)
+        em.publish("ord-ready-redis-2", "SUCCESS", 10.0)
+        payment_main.store.fail_ping = False
+
+        assert ready_check()["redis"] == "up"
+
 
 class TestIdempotencyAfterConfirm:
-    """Запись в _processed_orders не должна опережать broker confirm."""
+    """Запись в store не должна опережать broker confirm."""
 
     def test_confirmed_publish_records_order(self, monkeypatch):
+        import main as payment_main
         monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel()))
+        store = payment_main.store
 
         result = _pay()
 
         assert result["orderId"] == "ord-confirm-1"
-        assert "ord-confirm-1" in _processed_orders
+        assert store.data.get("ord-confirm-1", {}).get("status") == "SUCCESS"
 
     def test_unconfirmed_publish_returns_503_and_no_record(self, monkeypatch):
+        import main as payment_main
         monkeypatch.setattr(
             "main.emitter", _emitter_with(FakeChannel(publish_error=_nack())))
+        store = payment_main.store
 
         with pytest.raises(HTTPException) as exc:
             _pay()
@@ -564,15 +596,20 @@ class TestIdempotencyAfterConfirm:
         # Ключевая проверка F-07: без confirm запись об успешном платеже
         # делаться не должна, иначе клиентский ретрай получил бы
         # idempotentReplay=True и событие так и не ушло бы.
-        assert "ord-confirm-1" not in _processed_orders
+        assert "ord-confirm-1" not in store.data
 
     def test_retry_after_unconfirmed_publish_is_attempted_again(self, monkeypatch):
         """После 503 клиент повторяет платёж - он не должен получить replay."""
+        import main as payment_main
         monkeypatch.setattr(
             "main.emitter", _emitter_with(FakeChannel(publish_error=_nack())))
+        store = payment_main.store
 
         with pytest.raises(HTTPException):
             _pay()
+        # Публикация не подтверждена: pending-метка снята (release), иначе
+        # ретрай вечно упирался бы в «Payment is being processed».
+        assert "ord-confirm-1" not in store.data
 
         # Брокер оживает, следующая попытка обязана дойти до публикации.
         monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel()))
@@ -580,10 +617,11 @@ class TestIdempotencyAfterConfirm:
         result = _pay()
 
         assert result.get("idempotentReplay") is not True
-        assert "ord-confirm-1" in _processed_orders
+        assert store.data.get("ord-confirm-1", {}).get("status") == "SUCCESS"
 
     def test_second_request_after_confirm_is_idempotent_replay(self, monkeypatch):
         """Подтверждённый платёж кэшируется: повтор отдаёт replay без публикации."""
+        import main as payment_main
         ch = FakeChannel()
         monkeypatch.setattr("main.emitter", _emitter_with(ch))
 
@@ -592,3 +630,110 @@ class TestIdempotencyAfterConfirm:
 
         assert replay["idempotentReplay"] is True
         assert len(ch.published) == 1, "повтор не публикует событие заново"
+
+
+class TestIdempotencyStoreBehavior:
+    """Поведение хендлера вокруг общего хранилища идемпотентности."""
+
+    def test_redis_unavailable_on_acquire_returns_503(self, monkeypatch):
+        import main as payment_main
+        monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel()))
+        payment_main.store.fail_acquire = True
+
+        with pytest.raises(HTTPException) as exc:
+            _pay()
+
+        assert exc.value.status_code == 503
+        assert "Redis" in exc.value.detail
+
+    def test_redis_unavailable_on_replay_lookup_returns_503(self, monkeypatch):
+        """Fail-closed: повторный запрос при упавшем Redis тоже 503, а не
+        «тихий» повторный платёж, который списал бы деньги дважды."""
+        import main as payment_main
+        monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel()))
+        payment_main.store.data["ord-confirm-1"] = {
+            "status": "SUCCESS", "transactionId": "tx_a"}
+        payment_main.store.fail_get = True
+
+        with pytest.raises(HTTPException) as exc:
+            _pay()
+
+        assert exc.value.status_code == 503
+
+    def test_pending_marker_returns_503_not_replay(self, monkeypatch):
+        """Конкурентный дубль в полёте: событие ещё не ушло, replay врал бы."""
+        import main as payment_main
+        monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel()))
+        payment_main.store.data["ord-confirm-1"] = {"status": "PENDING"}
+
+        with pytest.raises(HTTPException) as exc:
+            _pay()
+
+        assert exc.value.status_code == 503
+        assert "being processed" in exc.value.detail
+
+    def test_failed_complete_after_confirm_returns_503(self, monkeypatch):
+        """Событие ушло, но запись не удалась - клиент должен получить
+        явный 503, а не молчаливый replay при повторе."""
+        import main as payment_main
+        monkeypatch.setattr("main.emitter", _emitter_with(FakeChannel()))
+        payment_main.store.fail_complete = True
+
+        with pytest.raises(HTTPException) as exc:
+            _pay()
+
+        assert exc.value.status_code == 503
+
+    def test_concurrent_requests_publish_exactly_once(self, monkeypatch):
+        """Два потока с одним orderId: побеждает один, второй получает 503,
+        публикация ровно одна. SET-NX-атомарность самого Redis проверяется
+        на живом сервере (test_redis_integration.py); здесь - реакция
+        хендлера на проигравший acquire."""
+        import threading
+        import main as payment_main
+        barrier = threading.Barrier(2)
+        fake = FakeStoreWithBarrier(barrier)
+        monkeypatch.setattr("main.store", fake)
+
+        published = []
+
+        class FakeEmitter:
+            def publish(self, order_id, status, amount):
+                published.append(order_id)
+
+        monkeypatch.setattr("main.emitter", FakeEmitter())
+
+        results = []
+
+        def worker():
+            try:
+                r = process_payment(
+                    PaymentRequest(orderId="ord-race-1", amount=5.0,
+                                   cardNumber="4111111111111111"),
+                    x_user_username="alice")
+                results.append(("ok", r))
+            except HTTPException as e:
+                results.append(("err", e.status_code))
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert len(published) == 1, "конкурентный дубль не должен публиковать"
+        assert len(results) == 2, results
+
+        fresh = [r for r in results
+                 if r[0] == "ok" and r[1].get("idempotentReplay") is not True]
+        assert len(fresh) == 1, f"нет свежего победителя: {results}"
+
+        # Проигравший гонку получает либо replay (победитель уже завершил
+        # запись в store), либо 503 (метка ещё PENDING). Обе реакции
+        # корректны: дублирующей публикации нет ни в одном случае.
+        second = [r for r in results if r not in fresh]
+        replayed = [r for r in second
+                    if r[0] == "ok" and r[1].get("idempotentReplay") is True]
+        errs = [r for r in second if r[0] == "err"]
+        assert (len(replayed) == 1 or (len(errs) == 1 and errs[0][1] == 503)), \
+            f"проигравший ответил некорректно: {results}"

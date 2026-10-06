@@ -3,6 +3,7 @@ from fastapi import FastAPI, Header, Response, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 import pika
+import redis as redis_client
 import json
 import os
 import threading
@@ -429,6 +430,124 @@ class PublishNotConfirmed(RuntimeError):
 emitter = PaymentStatusEmitter()
 
 
+class IdempotencyUnavailable(RuntimeError):
+    """Хранилище идемпотентности (Redis) недоступно.
+
+    Платёж нельзя ни обработать, ни безопасно повторить: обращение к
+    shared-состоянию упало, а без него мы не можем знать, не списали ли
+    деньги по этому orderId раньше. Означает ровно одно - клиенту 503.
+    """
+
+
+# Как долго хранить запись об обработанном платеже. Держим заметно дольше,
+# чем клиентские ретраи в самом худшем сценарии (сутки с запасом), но не
+# вечно: Redis - слой идемпотентности, полная история живёт в PostgreSQL
+# (шаг 3/5 F-22, issue #41), ключи которого не вытесняются.
+IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
+
+
+class IdempotencyStore:
+    """Идемпотентность платежей в общем для всех реплик Redis.
+
+    Раньше _processed_orders был словарём в памяти процесса (issue #35):
+    реплика и рестарт пода теряли его, и повторный запрос с тем же orderId
+    списывал деньги второй раз. Причина, по которой в чарте стоит
+    replicaCount: 1 (заглушка до полного решения).
+
+    Захват - атомарный SET NX: из двух конкурентных запросов с одним
+    orderId строго один получает "да", второй видит существующий ключ и
+    возвращает replay (или 503, если платёж ещё в полёте).
+
+    Fail-closed: любая ошибка Redis превращается в IdempotencyUnavailable и
+    503. Возвращаться к "тихому" словарю в памяти нельзя - он был причиной
+    двойного списания.
+
+    Соединение ленивое и живёт весь срок процесса. redis.Redis
+    потокобезопасен (connection pool), отдельный лок не нужен.
+    """
+
+    def __init__(self):
+        self._redis_url = os.getenv("REDIS_URL")
+        self._client = None
+
+    def _key(self, order_id: str) -> str:
+        return f"payment:idem:{order_id}"
+
+    def _connect(self):
+        if self._client is not None:
+            return self._client
+        if not self._redis_url:
+            raise IdempotencyUnavailable("REDIS_URL is not set")
+        # decode_responses=True: значения - JSON-строки, без него клиент
+        # возвращал бы байты и каждый вызов плодил бы decode.
+        self._client = redis_client.Redis.from_url(
+            self._redis_url,
+            decode_responses=True,
+            socket_connect_timeout=CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=CONNECT_TIMEOUT_SECONDS,
+        )
+        return self._client
+
+    def acquire(self, order_id: str) -> bool:
+        """Атомарный захват orderId. True - этот вызов обрабатывает платёж."""
+        try:
+            return bool(self._connect().set(
+                self._key(order_id), '{"status":"PENDING"}',
+                nx=True, ex=IDEMPOTENCY_TTL_SECONDS))
+        except redis_client.RedisError as e:
+            print(f"[REDIS-ERROR] acquire failed for order {order_id}: {e}")
+            raise IdempotencyUnavailable("Redis unavailable on acquire")
+
+    def get(self, order_id: str):
+        """Текущая запись об orderId (None - ещё не обработан)."""
+        try:
+            raw = self._connect().get(self._key(order_id))
+        except redis_client.RedisError as e:
+            print(f"[REDIS-ERROR] get failed for order {order_id}: {e}")
+            raise IdempotencyUnavailable("Redis unavailable on get")
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            # Мусор в ключе (ручная правка, старая версия процесса): лечим
+            # как отсутствие записи - клиент получит 503 от acquire, а не
+            # зеркало повреждённого состояния.
+            return None
+
+    def complete(self, order_id: str, status: str, transaction_id: str):
+        """Фиксирует итог платежа после broker confirm."""
+        payload = json.dumps({"status": status, "transactionId": transaction_id})
+        try:
+            # keepttl=True: не продлеваем окно идемпотентности при обновлении.
+            self._connect().set(self._key(order_id), payload, keepttl=True)
+        except redis_client.RedisError as e:
+            print(f"[REDIS-ERROR] complete failed for order {order_id}: {e}")
+            raise IdempotencyUnavailable("Redis unavailable on complete")
+
+    def release(self, order_id: str):
+        """Снимает pending-метку: событие не доставлено, повторная попытка
+        клиента должна пройти заново, а не упереться в replay."""
+        try:
+            self._connect().delete(self._key(order_id))
+        except redis_client.RedisError as e:
+            print(f"[REDIS-ERROR] release failed for order {order_id}: {e}")
+            # Ключ сам истечёт по TTL; 503 уже уходит клиенту.
+            raise IdempotencyUnavailable("Redis unavailable on release")
+
+    def ping(self):
+        """Проверка для /ready. Кидает IdempotencyUnavailable при сбое."""
+        try:
+            self._connect().ping()
+        except (redis_client.RedisError, IdempotencyUnavailable) as e:
+            if not isinstance(e, IdempotencyUnavailable):
+                print(f"[REDIS-WARN] ping failed: {e}")
+            raise IdempotencyUnavailable("Redis is not reachable")
+
+
+store = IdempotencyStore()
+
+
 @asynccontextmanager
 async def lifespan(app):
     """Старт и корректная остановка heartbeat-потока.
@@ -449,9 +568,9 @@ async def lifespan(app):
 
 app = FastAPI(title="Payment Service", lifespan=lifespan)
 
-# Идемпотентность: повторный запрос с тем же orderId возвращает исходный результат
-_processed_orders = {}
-_processed_lock = threading.Lock()
+# Идемпотентность живёт в общем Redis (store выше), а не в памяти процесса:
+# словарь _processed_orders не переживал рестарт пода и не разделялся
+# репликами (issue #35, F-22/#41).
 
 
 @app.get("/health")
@@ -469,14 +588,26 @@ def ready_check():
     первого коннекта не говорит о текущем состоянии, и под с оборванным
     соединением продолжал бы получать трафик и отдавать 503 на каждый
     платёж. Состояние "never" - брокер ещё ни разу не ответил.
+
+    Идемпотентность fail-closed: недоступный Redis тоже означает 503 - без
+    него сервис не может отличить повторный платёж от нового и списал бы
+    деньги дважды.
     """
     state = emitter.connection_state
-    if state == "up":
-        return {"status": "UP", "service": "payment-service", "rabbitmq": state}
-    raise HTTPException(
-        status_code=503,
-        detail=f"RabbitMQ is not connected (state: {state})",
-    )
+    if state != "up":
+        raise HTTPException(
+            status_code=503,
+            detail=f"RabbitMQ is not connected (state: {state})",
+        )
+    try:
+        store.ping()
+    except IdempotencyUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="Idempotency store (Redis) is unavailable",
+        )
+    return {"status": "UP", "service": "payment-service",
+            "rabbitmq": state, "redis": "up"}
 
 
 @app.get("/metrics")
@@ -490,14 +621,34 @@ def process_payment(request: PaymentRequest, x_user_username: str = Header(None)
         raise HTTPException(
             status_code=400, detail="Missing identity header x-user-username")
 
-    # Идемпотентность по orderId
-    with _processed_lock:
-        if request.orderId in _processed_orders:
-            cached = _processed_orders[request.orderId]
+    # Идемпотентность по orderId: атомарный SET NX в общем Redis. Из двух
+    # конкурентных запросов (два пода, два потока одного пода) ровно один
+    # получает право обработать платёж.
+    try:
+        if not store.acquire(request.orderId):
+            cached = store.get(request.orderId)
+            if cached is None:
+                # Ключ был, но истёк между acquire и get: крайне редкая гонка
+                # с TTL. Вариантов два - повторить платёж или отдать 503; оба
+                # безопасны, выбираем честный 503 с просьбой ретраить.
+                raise HTTPException(
+                    status_code=503,
+                    detail="Payment state expired concurrently, retry later")
+            if cached.get("status") == "PENDING":
+                # Конкурентный дубль ещё обрабатывается (событие не ушло -
+                # PENDING снимается только после confirm). Отдаём 503, а не
+                # replay: replay солгал бы про результат.
+                raise HTTPException(
+                    status_code=503,
+                    detail="Payment is being processed, retry later")
             return {"orderId": request.orderId,
                     "status": cached["status"],
                     "transactionId": cached["transactionId"],
                     "amount": request.amount, "idempotentReplay": True}
+    except IdempotencyUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="Idempotency store (Redis) is unavailable. Try again later.")
 
     # Эмуляция платёжного шлюза: платёж «проходит», только если карта имеет
     # валидный Luhn-контрольный разряд. Ветка DECLINED больше не мёртвая.
@@ -510,20 +661,33 @@ def process_payment(request: PaymentRequest, x_user_username: str = Header(None)
     PAYMENT_COUNTER.labels(status=status).inc()
 
     try:
-        # Порядок важен: запись в _processed_orders происходит только после
-        # broker confirm. Если confirm не пришёл, исключение уходит выше и
-        # идемпотентность не засоряется записью о платеже, событие о котором
-        # клиент не видел (issue #37, F-07, dual write без транзакции).
+        # Порядок важен: фиксация результата происходит только после broker
+        # confirm. Если confirm не пришёл, исключение уходит выше, pending-
+        # метка снимается, и идемпотентность не засоряется записью о платеже,
+        # событие о котором клиент не видел (issue #37, F-07).
         emitter.publish(request.orderId, status, request.amount)
     except Exception as e:
         # Не «прощаем» потерю события: клиенту сообщаем, что платёж не завершён
         print(f"[RABBITMQ-ERROR] Failed to dispatch message: {e}")
+        try:
+            store.release(request.orderId)
+        except IdempotencyUnavailable:
+            pass  # ключ истечёт по TTL; 503 всё равно уходит
         raise HTTPException(
             status_code=503, detail="Payment broker unavailable. Try again later.")
 
-    with _processed_lock:
-        _processed_orders[request.orderId] = {
-            "status": status, "transactionId": transaction_id}
+    try:
+        store.complete(request.orderId, status, transaction_id)
+    except IdempotencyUnavailable:
+        # Событие подтверждено брокером, но запись об итоге не удалась.
+        # Клиент получает 503 и не повторит платёж до истечения pending-метки
+        # (сутки), а двойного списания через повторный publish не будет -
+        # acquire ему не отдаст. Полное решение - источник правды в БД (F-22,
+        # шаг 3/5), где отсутствие записи видно напрямую.
+        print(f"[REDIS-ERROR] Order {request.orderId} confirmed but not recorded")
+        raise HTTPException(
+            status_code=503, detail="Payment recorded in broker but state store "
+                                    "is unavailable. Contact support before retrying.")
 
     return {
         "orderId": request.orderId,

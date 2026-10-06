@@ -336,6 +336,41 @@ jobs:
             exit 1
           fi
 
+      - name: Test payment-service against Redis
+        # Идемпотентность держится на атомарном SET NX (F-22, #41): с
+        # заглушкой тест доказывал бы только то, что фейк-словарь повторяет
+        # контракт. База 15 изолирована от cart-тестов (localhost:6379/0).
+        working-directory: services/payment-service
+        env:
+          REDIS_TEST_URL: redis://localhost:6379/15
+        run: |
+          set -euo pipefail
+
+          python -m pytest tests/test_redis_integration.py -v \
+            --junitxml="$RUNNER_TEMP/payment-redis-integration.xml" \
+            | tee "$RUNNER_TEMP/payment-redis-integration.log"
+
+          report="$RUNNER_TEMP/payment-redis-integration.xml"
+          if [ ! -f "$report" ]; then
+            echo "::error::JUnit-отчёт Redis-интеграции не создан"
+            exit 1
+          fi
+
+          passed="$({ grep -o '<testcase' "$report" || true; } | wc -l | tr -d ' ')"
+          skipped="$({ grep -o '<skipped' "$report" || true; } | wc -l | tr -d ' ')"
+          echo "интеграционных проверок идемпотентности выполнено: $passed, пропущено: $skipped"
+
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped интеграционных проверок пропущено - Redis должен быть доступен"
+            exit 1
+          fi
+
+          if [ "$passed" -ne 5 ]; then
+            echo "::error::получено $passed тестов, ожидалось ровно 5"
+            exit 1
+          fi
+          echo "SET NX, release и переживание рестарта проверены на живом Redis"
+
       - name: Test analytics-service (unit)
         working-directory: services/analytics-service
         run: python -m pytest tests/ -v --ignore=tests/test_rabbitmq_integration.py

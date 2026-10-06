@@ -138,12 +138,17 @@ class TestPublisherConfirms:
         channel.queue_delete(queue=queue)
 
     def test_publish_to_missing_exchange_is_rejected(self, broker, emitter, monkeypatch):
-        """Брокер отверг публикацию - PublishNotConfirmed и никакой записи.
+        """Брокер отверг публикацию - 503 и никакой записи.
 
         Настоящий отказ живого брокера: публикация в несуществующий
         exchange закрывает канал с 404 NOT_FOUND. Подмена точечная - в
         остальном идёт реальный pika и реальный confirm.
         """
+        from fakes import FakeStore
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(payment_main, "store", FakeStore())
+        monkeypatch.setattr(payment_main, "emitter", emitter)
         order_id = f"itest-reject-{uuid.uuid4().hex[:8]}"
         emitter.publish(f"itest-warmup-{uuid.uuid4().hex[:8]}", "SUCCESS", 1.0)
 
@@ -157,10 +162,14 @@ class TestPublisherConfirms:
             pika.adapters.blocking_connection.BlockingChannel,
             "basic_publish", publishing_to_nowhere)
 
-        with pytest.raises(payment_main.PublishNotConfirmed):
-            emitter.publish(order_id, "SUCCESS", 5.0)
+        with pytest.raises(HTTPException) as exc:
+            payment_main.process_payment(
+                payment_main.PaymentRequest(
+                    orderId=order_id, amount=5.0,
+                    cardNumber="4111111111111111"),
+                x_user_username="alice")
 
-        with payment_main._processed_lock:
-            assert order_id not in payment_main._processed_orders, \
-                "отклонённый брокером платёж не должен засчитываться"
+        assert exc.value.status_code == 503
+        assert payment_main.store.data.get(order_id) is None, \
+            "отклонённый брокером платёж не должен засчитываться (pending снят)"
         assert emitter._connection is None, "отказ должен сбросить соединение"

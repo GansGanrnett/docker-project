@@ -179,6 +179,11 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: cart-service
+        # payment-service держит идемпотентность платежей в этом же Redis
+        # (F-22, issue #41): без правила сеанс SET NX умирает на connect.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: payment-service
       ports:
         - protocol: TCP
           port: 6379
