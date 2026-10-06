@@ -80,6 +80,31 @@ spec:
     path: "/mnt/data/postgres-catalog"
     type: DirectoryOrCreate
 ---
+# Payment database (F-22, issue #41). Same static reservation pattern as the
+# two other PostgreSQL instances: without a claimRef the claim would race for
+# the RabbitMQ/auth volumes (see the comment at the top of this file).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-payment-pv
+  labels:
+    type: local
+    app: payment-postgres
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  volumeMode: Filesystem
+  claimRef:
+    namespace: default
+    name: data-payment-postgres-0
+  hostPath:
+    path: "/mnt/data/postgres-payment"
+    type: DirectoryOrCreate
+---
 apiVersion: v1
 kind: PersistentVolume
 metadata:

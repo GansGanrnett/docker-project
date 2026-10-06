@@ -1,0 +1,113 @@
+# Payment service database (F-22, issue #41).
+#
+# Payment-service gets a dedicated PostgreSQL instance so that payment
+# idempotency survives pod restarts and lives outside process memory (issue
+# #35). The layout mirrors auth-postgres/catalog-postgres exactly: same init
+# container that hands the data dir to uid 999, same pg_hba hardening, same
+# static PV reservation in storage-volumes.yaml.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: payment-postgres
+  namespace: default
+spec:
+  serviceName: payment-postgres-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-postgres
+  template:
+    metadata:
+      labels:
+        app: payment-postgres
+    spec:
+      # Fresh PVCs are owned by root, so the non-root postgres user cannot run
+      # initdb on them. This init container hands the data dir over to 999 and
+      # then exits; the postgres container itself stays fully unprivileged.
+      # See issue #20.
+      initContainers:
+        - name: init-data-dir
+          image: postgres:15-alpine
+          command:
+            - sh
+            - -c
+            - chown -R 999:999 /var/lib/postgresql/data && chmod 700 /var/lib/postgresql/data
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+              name: pg
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: payment-db-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: payment-db-password
+            - name: POSTGRES_DB
+              value: payment_db
+          # Убираем trust для localhost: см. issue #12 и infrastructure/postgres/pg_hba.conf
+          args: ["-c", "hba_file=/etc/postgres/pg_hba.conf"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: pg-hba
+              mountPath: /etc/postgres/pg_hba.conf
+              subPath: pg_hba.conf
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "payment_user", "-d", "payment_db"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: pg-hba
+          configMap:
+            name: pg-hba
+            items:
+              - key: pg_hba.conf
+                path: pg_hba.conf
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: manual
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-postgres-service
+spec:
+  selector:
+    app: payment-postgres
+  ports:
+    - port: 5432
+      targetPort: pg

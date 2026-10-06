@@ -23,6 +23,7 @@ TIMEOUT="${TIMEOUT:-120}"
 declare -A PV_PATHS=(
   [postgres-auth-pv]="/mnt/data/postgres-auth"
   [postgres-catalog-pv]="/mnt/data/postgres-catalog"
+  [postgres-payment-pv]="/mnt/data/postgres-payment"
   [mongodb-orders-pv]="/mnt/data/mongodb-orders"
   [redis-cart-pv]="/mnt/data/redis"
   [rabbitmq-messages-pv]="/mnt/data/rabbitmq"
@@ -36,6 +37,7 @@ declare -A PV_PATHS=(
 declare -A EXPECT=(
   [data-auth-postgres-0]=postgres-auth-pv
   [data-catalog-postgres-0]=postgres-catalog-pv
+  [data-payment-postgres-0]=postgres-payment-pv
   [mongodb-orders-pvc]=mongodb-orders-pv
   [redis-cart-pvc]=redis-cart-pv
   [rabbitmq-messages-pvc]=rabbitmq-messages-pv
@@ -183,6 +185,7 @@ check_init() {
 # to it.
 check_init auth-postgres    init-data-dir     postgres         /var/lib/postgresql/data
 check_init catalog-postgres init-data-dir     postgres         /var/lib/postgresql/data
+check_init payment-postgres init-data-dir     postgres         /var/lib/postgresql/data
 check_init order-mongodb    init-mongo-data   order-mongodb    /data/db
 check_init cart-redis       init-redis-data   cart-redis       /data
 check_init message-rabbitmq init-rabbitmq-data message-rabbitmq /var/lib/rabbitmq
