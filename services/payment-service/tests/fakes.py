@@ -9,7 +9,7 @@ acquire/get/complete/release/ping дублируют сигнатуры main.Ide
 """
 import threading
 
-from main import IdempotencyUnavailable
+from main import IdempotencyUnavailable, PaymentsUnavailable
 
 
 class FakeStore:
@@ -47,6 +47,40 @@ class FakeStore:
     def ping(self):
         if self.fail_ping:
             raise IdempotencyUnavailable("fake ping failure")
+
+
+class FakePaymentsRepository:
+    """Заглушка PaymentsRepository: in-memory словарь с флагами отказов.
+
+    Контракт один в один с app/core/repository.PaymentsRepository: upsert
+    идемпотентен по order_id, get возвращает dict {status, transactionId}
+    или None. Реальную семантику (ON CONFLICT, уникальность колонки)
+    проверяет test_db_integration.py на живом PostgreSQL.
+    """
+
+    def __init__(self):
+        self.data = {}
+        self.fail_upsert = False
+        self.fail_get = False
+        self.fail_ping = False
+
+    def upsert(self, order_id, status, transaction_id, amount):
+        if self.fail_upsert:
+            raise PaymentsUnavailable("fake upsert failure")
+        self.data[order_id] = {
+            "status": status, "transactionId": transaction_id, "amount": amount}
+
+    def get(self, order_id):
+        if self.fail_get:
+            raise PaymentsUnavailable("fake get failure")
+        rec = self.data.get(order_id)
+        if rec is None:
+            return None
+        return {"status": rec["status"], "transactionId": rec["transactionId"]}
+
+    def ping(self):
+        if self.fail_ping:
+            raise PaymentsUnavailable("fake ping failure")
 
 
 class FakeStoreWithBarrier:

@@ -15,7 +15,7 @@ from main import (
     process_payment,
     ready_check,
 )
-from fakes import FakeStore, FakeStoreWithBarrier
+from fakes import (FakePaymentsRepository, FakeStore, FakeStoreWithBarrier)
 from pydantic import ValidationError
 
 
@@ -150,6 +150,7 @@ def clean_state(monkeypatch):
     # guest/guest сам - для теста разницы нет.
     monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost:5672/")
     monkeypatch.setattr("main.store", FakeStore())
+    monkeypatch.setattr("main.db", FakePaymentsRepository())
 
 
 def _pay(order_id="ord-confirm-1", amount=10.0):
@@ -737,3 +738,130 @@ class TestIdempotencyStoreBehavior:
         errs = [r for r in second if r[0] == "err"]
         assert (len(replayed) == 1 or (len(errs) == 1 and errs[0][1] == 503)), \
             f"проигравший ответил некорректно: {results}"
+
+
+class TestDatabasePersistence:
+    """Источник правды в PostgreSQL (F-22, шаг 3/5): БД переживает TTL и
+    рестарты Redis, поэтому повторное списание невозможно даже после
+    полной потери идемпотент-ключа."""
+
+    def test_replay_from_db_when_redis_lost_data(self, monkeypatch):
+        """Redis пуст (рестарт/сброс), БД помнит платёж: replay из БД,
+        без повторной публикации и без двойного списания."""
+        import main as payment_main
+        ch = FakeChannel()
+        monkeypatch.setattr("main.emitter", _emitter_with(ch))
+        payment_main.db.data["ord-db-1"] = {
+            "status": "SUCCESS", "transactionId": "tx_old", "amount": 5.0}
+
+        result = process_payment(
+            PaymentRequest(orderId="ord-db-1", amount=5.0,
+                           cardNumber="4111111111111111"),
+            x_user_username="alice")
+
+        assert result["idempotentReplay"] is True
+        assert result["transactionId"] == "tx_old"
+        assert len(ch.published) == 0, "replay из БД не публикует событие"
+        # Redis восстановлен из БД: следующие ретраи не ходят в БД.
+        assert payment_main.store.data["ord-db-1"]["status"] == "SUCCESS"
+
+    def test_replay_from_db_when_redis_key_expired(self, monkeypatch):
+        """Гонка с TTL: acquire вернул False, ключ истёк, get пуст.
+        БД отвечает на вопрос вместо 503-ретрая."""
+        import main as payment_main
+
+        class ExpiredStore(FakeStore):
+            def acquire(self, order_id):
+                return False
+
+            def get(self, order_id):
+                return None
+
+        monkeypatch.setattr("main.store", ExpiredStore())
+        payment_main.db.data["ord-db-2"] = {
+            "status": "DECLINED", "transactionId": "tx_d2", "amount": 5.0}
+
+        result = process_payment(
+            PaymentRequest(orderId="ord-db-2", amount=5.0,
+                           cardNumber="4111111111111111"),
+            x_user_username="alice")
+
+        assert result["idempotentReplay"] is True
+        assert result["status"] == "DECLINED"
+        assert payment_main.store.data["ord-db-2"]["status"] == "DECLINED"
+
+    def test_fresh_acquire_checks_db_before_publishing(self, monkeypatch):
+        """Свежий захват Redis НЕ обходит БД: даже потеряв ключ, сервис
+        не списывает обработанный orderId повторно."""
+        import main as payment_main
+        ch = FakeChannel()
+        monkeypatch.setattr("main.emitter", _emitter_with(ch))
+        payment_main.db.data["ord-db-3"] = {
+            "status": "SUCCESS", "transactionId": "tx_3", "amount": 5.0}
+
+        result = process_payment(
+            PaymentRequest(orderId="ord-db-3", amount=5.0,
+                           cardNumber="4111111111111111"),
+            x_user_username="alice")
+
+        assert result["idempotentReplay"] is True
+        assert len(ch.published) == 0
+
+    def test_db_upsert_failure_after_confirm_returns_503(self, monkeypatch):
+        """Событие подтверждено брокером, но история не записалась: 503,
+        pending-метка НЕ снимается - повторная публикация невозможна."""
+        import main as payment_main
+        ch = FakeChannel()
+        monkeypatch.setattr("main.emitter", _emitter_with(ch))
+        payment_main.db.fail_upsert = True
+
+        with pytest.raises(HTTPException) as exc:
+            process_payment(
+                PaymentRequest(orderId="ord-db-4", amount=5.0,
+                               cardNumber="4111111111111111"),
+                x_user_username="alice")
+
+        assert exc.value.status_code == 503
+        assert "history" in exc.value.detail
+        assert len(ch.published) == 1
+        # Платёж «в полёте»: клиент получит 503 и при повторе, а не второе
+        # списание и не replay. Источник правды (БД) поправит ситуацию.
+        assert payment_main.store.data["ord-db-4"]["status"] == "PENDING"
+
+    def test_db_unavailable_on_replay_lookup_returns_503(self, monkeypatch):
+        """Fail-closed: Redis пуст, БД недоступна - 503 вместо «тихого»
+        повторного списания."""
+        import main as payment_main
+
+        class ExpiredStore(FakeStore):
+            def acquire(self, order_id):
+                return False
+
+            def get(self, order_id):
+                return None
+
+        ch = FakeChannel()
+        monkeypatch.setattr("main.emitter", _emitter_with(ch))
+        monkeypatch.setattr("main.store", ExpiredStore())
+        payment_main.db.fail_get = True
+
+        with pytest.raises(HTTPException) as exc:
+            process_payment(
+                PaymentRequest(orderId="ord-db-5", amount=5.0,
+                               cardNumber="4111111111111111"),
+                x_user_username="alice")
+
+        assert exc.value.status_code == 503
+        assert len(ch.published) == 0
+
+    def test_ready_returns_503_when_postgres_down(self, monkeypatch):
+        import main as payment_main
+        em = _emitter_with(FakeChannel())
+        monkeypatch.setattr("main.emitter", em)
+        em.publish("ord-ready-pg", "SUCCESS", 10.0)
+        payment_main.db.fail_ping = True
+
+        with pytest.raises(HTTPException) as exc:
+            ready_check()
+        assert exc.value.status_code == 503
+        assert "PostgreSQL" in exc.value.detail

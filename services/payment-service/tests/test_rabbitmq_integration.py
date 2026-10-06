@@ -144,10 +144,11 @@ class TestPublisherConfirms:
         exchange закрывает канал с 404 NOT_FOUND. Подмена точечная - в
         остальном идёт реальный pika и реальный confirm.
         """
-        from fakes import FakeStore
+        from fakes import FakePaymentsRepository, FakeStore
         from fastapi import HTTPException
 
         monkeypatch.setattr(payment_main, "store", FakeStore())
+        monkeypatch.setattr(payment_main, "db", FakePaymentsRepository())
         monkeypatch.setattr(payment_main, "emitter", emitter)
         order_id = f"itest-reject-{uuid.uuid4().hex[:8]}"
         emitter.publish(f"itest-warmup-{uuid.uuid4().hex[:8]}", "SUCCESS", 1.0)
