@@ -96,6 +96,41 @@ spec:
         - protocol: TCP
           port: 53
 ---
+# Payment database (F-22, issue #41): reachable only from payment-service and
+# from the backup CronJob.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payment-postgres-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: payment-postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: payment-service
+        # backup-postgres CronJob: снимает дампы с того же PVC.
+        - podSelector:
+            matchLabels:
+              app: backup
+      ports:
+        - protocol: TCP
+          port: 5432
+  egress:
+    # Только DNS: наружу payment-postgres не ходит.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
