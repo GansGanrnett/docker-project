@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, Response, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from app.core.repository import PaymentsRepository, PaymentsUnavailable
 import pika
 import redis as redis_client
 import json
@@ -547,6 +548,12 @@ class IdempotencyStore:
 
 store = IdempotencyStore()
 
+# Полная история обработанных платежей - в PostgreSQL (F-22, issue #41,
+# шаг 3/5). Redis-ключи истекают по TTL (сутки), БД помнит вечно: именно
+# она отвечает на вопрос «этот orderId уже обработан?» после истечения
+# TTL и после рестарта пода/хранилища. Fail-closed - сбои БД дают 503.
+db = PaymentsRepository()
+
 
 @asynccontextmanager
 async def lifespan(app):
@@ -606,8 +613,15 @@ def ready_check():
             status_code=503,
             detail="Idempotency store (Redis) is unavailable",
         )
+    try:
+        db.ping()
+    except PaymentsUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="Payment history (PostgreSQL) is unavailable",
+        )
     return {"status": "UP", "service": "payment-service",
-            "rabbitmq": state, "redis": "up"}
+            "rabbitmq": state, "redis": "up", "postgres": "up"}
 
 
 @app.get("/metrics")
@@ -628,9 +642,17 @@ def process_payment(request: PaymentRequest, x_user_username: str = Header(None)
         if not store.acquire(request.orderId):
             cached = store.get(request.orderId)
             if cached is None:
-                # Ключ был, но истёк между acquire и get: крайне редкая гонка
-                # с TTL. Вариантов два - повторить платёж или отдать 503; оба
-                # безопасны, выбираем честный 503 с просьбой ретраить.
+                # Ключ был, но истёк между acquire и get: гонка с TTL.
+                # БД - источник правды: если платёж когда-то обработан,
+                # отдаём replay и восстанавливаем Redis; если нет -
+                # честный 503 с просьбой ретраить.
+                saved = db.get(request.orderId)
+                if saved is not None:
+                    store.complete(
+                        request.orderId, saved["status"], saved["transactionId"])
+                    return _idempotent_replay(
+                        request.orderId, saved["status"],
+                        saved["transactionId"], request.amount)
                 raise HTTPException(
                     status_code=503,
                     detail="Payment state expired concurrently, retry later")
@@ -641,14 +663,33 @@ def process_payment(request: PaymentRequest, x_user_username: str = Header(None)
                 raise HTTPException(
                     status_code=503,
                     detail="Payment is being processed, retry later")
-            return {"orderId": request.orderId,
-                    "status": cached["status"],
-                    "transactionId": cached["transactionId"],
-                    "amount": request.amount, "idempotentReplay": True}
+            return _idempotent_replay(
+                request.orderId, cached["status"], cached["transactionId"],
+                request.amount)
     except IdempotencyUnavailable:
         raise HTTPException(
             status_code=503,
             detail="Idempotency store (Redis) is unavailable. Try again later.")
+    except PaymentsUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="Payment history (PostgreSQL) is unavailable. Try again later.")
+
+    # Свежий захват, но Redis мог потерять данные целиком (рестарт
+    # хранилища, восстановление из бэкапа): БД помнит всё, что прошло
+    # через confirm. Повторный платёж по обработанному orderId был бы
+    # двойным списанием - сначала проверяем историю.
+    try:
+        saved = db.get(request.orderId)
+    except PaymentsUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="Payment history (PostgreSQL) is unavailable. Try again later.")
+    if saved is not None:
+        store.complete(request.orderId, saved["status"], saved["transactionId"])
+        return _idempotent_replay(
+            request.orderId, saved["status"], saved["transactionId"],
+            request.amount)
 
     # Эмуляция платёжного шлюза: платёж «проходит», только если карта имеет
     # валидный Luhn-контрольный разряд. Ветка DECLINED больше не мёртвая.
@@ -677,14 +718,28 @@ def process_payment(request: PaymentRequest, x_user_username: str = Header(None)
             status_code=503, detail="Payment broker unavailable. Try again later.")
 
     try:
+        # Полная история - в PostgreSQL: без этой записи идемпотентность
+        # живёт только сутки TTL, а после рестарта Redis повторный запрос
+        # списал бы деньги второй раз (F-22, step 3/5).
+        db.upsert(request.orderId, status, transaction_id, request.amount)
+    except PaymentsUnavailable:
+        print(f"[POSTGRES-ERROR] Order {request.orderId} confirmed but not "
+              "recorded in history")
+        raise HTTPException(
+            status_code=503, detail="Payment recorded in broker but history "
+                                    "is unavailable. Contact support before "
+                                    "retrying.")
+
+    try:
         store.complete(request.orderId, status, transaction_id)
     except IdempotencyUnavailable:
-        # Событие подтверждено брокером, но запись об итоге не удалась.
-        # Клиент получает 503 и не повторит платёж до истечения pending-метки
-        # (сутки), а двойного списания через повторный publish не будет -
-        # acquire ему не отдаст. Полное решение - источник правды в БД (F-22,
-        # шаг 3/5), где отсутствие записи видно напрямую.
-        print(f"[REDIS-ERROR] Order {request.orderId} confirmed but not recorded")
+        # Событие подтверждено брокером, запись в БД сделана, но Redis-метка
+        # не обновилась. Клиент получает 503 и не повторит платёж до
+        # истечения pending-метки (сутки), а источник правды (БД) уже
+        # содержит итог - при следующем обращении к orderId replay придёт
+        # из БД, двойного списания не будет.
+        print(f"[REDIS-ERROR] Order {request.orderId} confirmed but not "
+              "recorded in state store")
         raise HTTPException(
             status_code=503, detail="Payment recorded in broker but state store "
                                     "is unavailable. Contact support before retrying.")
@@ -695,6 +750,14 @@ def process_payment(request: PaymentRequest, x_user_username: str = Header(None)
         "transactionId": transaction_id,
         "amount": request.amount,
     }
+
+
+def _idempotent_replay(order_id: str, status: str, transaction_id: str,
+                       amount: float) -> dict:
+    """Ответ-повтор для уже обработанного orderId: без новой публикации."""
+    return {"orderId": order_id, "status": status,
+            "transactionId": transaction_id, "amount": amount,
+            "idempotentReplay": True}
 
 
 def _luhn_valid(card_number: str) -> bool:
