@@ -3,9 +3,9 @@
 # built and published just to carry pg_dump and mongodump side by side.
 #
 # Both mount the SAME PVC, but write into separate subdirectories
-# (auth-postgres/, catalog-postgres/, mongodb/), so the two jobs never collide
-# and each keeps its own retention window. The script itself is shared and comes
-# from the backup-scripts ConfigMap, which is generated from
+# (auth-postgres/, catalog-postgres/, payment-postgres/, mongodb/), so the two
+# jobs never collide and each keeps its own retention window. The script itself
+# is shared and comes from the backup-scripts ConfigMap, which is generated from
 # infrastructure/kubernetes/scripts/ by render-backup-configmap.sh.
 #
 # Schedule notes:
@@ -98,6 +98,20 @@ spec:
                     secretKeyRef:
                       name: app-secrets
                       key: catalog-db-password
+                - name: PAYMENT_DB_HOST
+                  value: payment-postgres-service
+                - name: PAYMENT_DB_NAME
+                  value: payment_db
+                - name: PAYMENT_DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: payment-db-user
+                - name: PAYMENT_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: payment-db-password
               volumeMounts:
                 - name: backups
                   mountPath: /backups
