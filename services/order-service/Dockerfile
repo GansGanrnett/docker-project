@@ -13,7 +13,11 @@ RUN dotnet publish OrderService.csproj -c Release -o /app --no-restore
 ARG REGISTRY=mcr.microsoft.com
 FROM ${REGISTRY}/dotnet/aspnet:8.0
 WORKDIR /app
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# The base image ships perl-base 5.36.0-7+deb12u3; CVE-2026-13221,
+# CVE-2026-42496 and CVE-2026-8376 are fixed only in deb12u4. A plain
+# "apt-get install" does not upgrade already-installed packages, so
+# upgrade explicitly at build time.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app .
 
 EXPOSE 8084
