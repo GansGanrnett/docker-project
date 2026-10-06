@@ -1,0 +1,120 @@
+# Weekly version updates for every dependency ecosystem in the repo.
+#
+# Rationale: stale dependencies accumulated until the Trivy gate went red on
+# every open PR at once (#51). Continuous weekly updates keep that class of
+# blocker from recurring - small bumps land as they appear instead of piling
+# up into a blocking batch.
+#
+# Grouping: patch + minor updates ride together in one weekly PR per entry;
+# anything that does not match the group rules (i.e. major updates) opens its
+# own PR, so majors always get an explicit review.
+version: 2
+updates:
+  # --- npm: api-gateway, cart-service --------------------------------------
+  - package-ecosystem: "npm"
+    directories:
+      - "/services/api-gateway"
+      - "/services/cart-service"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      npm-patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- pip: payment-service, analytics-service -----------------------------
+  - package-ecosystem: "pip"
+    directories:
+      - "/services/payment-service"
+      - "/services/analytics-service"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      pip-patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- Maven: auth-service --------------------------------------------------
+  - package-ecosystem: "maven"
+    directory: "/services/auth-service"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      maven-patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- NuGet: order-service (project + tests) ------------------------------
+  - package-ecosystem: "nuget"
+    directory: "/services/order-service"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      nuget-patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- Go modules: catalog-service -----------------------------------------
+  - package-ecosystem: "gomod"
+    directory: "/services/catalog-service"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      gomod-patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- GitHub Actions: every workflow --------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions-patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- Docker: base images in every service Dockerfile ---------------------
+  - package-ecosystem: "docker"
+    directories:
+      - "/services/analytics-service"
+      - "/services/api-gateway"
+      - "/services/auth-service"
+      - "/services/cart-service"
+      - "/services/catalog-service"
+      - "/services/order-service"
+      - "/services/payment-service"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      docker-patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
