@@ -499,6 +499,13 @@ jobs:
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: './infrastructure/kubernetes/helm-charts/auth-service/files'
+      - name: Run ShellCheck on Kubernetes scripts
+        # Backup/restore и preflight живут здесь, а не в ./scripts: они
+        # монтируются в поды через ConfigMap и выполняются в кластере.
+        # Без этого шага они не проверялись бы в CI вовсе (#54).
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: './infrastructure/kubernetes/scripts'
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
 
