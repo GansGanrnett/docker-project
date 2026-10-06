@@ -31,9 +31,13 @@ from alembic.config import Config  # noqa: E402
 from app.core.database import Base  # noqa: E402,F401 - регистрирует модели
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="module", autouse=True)
 def migrated_db():
-    """Поднимает схему миграциями с нуля (как в контейнере при старте)."""
+    """Поднимает схему миграциями с нуля (как в контейнере при старте).
+
+    autouse: первый тест модуля (проверка DDL) обязан бежать уже после
+    миграций - без этого на чистой БД он падает, а остальные проходят.
+    """
     ini = str(Path(__file__).resolve().parent.parent / "migrations" / "alembic.ini")
     command.upgrade(Config(ini), "head")
 
