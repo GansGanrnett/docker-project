@@ -26,6 +26,7 @@ declare -A PV_PATHS=(
   [mongodb-orders-pv]="/mnt/data/mongodb-orders"
   [redis-cart-pv]="/mnt/data/redis"
   [rabbitmq-messages-pv]="/mnt/data/rabbitmq"
+  [backups-pv]="/mnt/data/backups"
 )
 
 # PVC name -> the PV it is supposed to own. The binder matches a claim to any PV
@@ -38,6 +39,7 @@ declare -A EXPECT=(
   [mongodb-orders-pvc]=mongodb-orders-pv
   [redis-cart-pvc]=redis-cart-pv
   [rabbitmq-messages-pvc]=rabbitmq-messages-pv
+  [backups-pvc]=backups-pv
 )
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -184,6 +186,21 @@ check_init catalog-postgres init-data-dir     postgres         /var/lib/postgres
 check_init order-mongodb    init-mongo-data   order-mongodb    /data/db
 check_init cart-redis       init-redis-data   cart-redis       /data
 check_init message-rabbitmq init-rabbitmq-data message-rabbitmq /var/lib/rabbitmq
+
+# The backups PVC is different from the five above: its writer is a CronJob, and
+# Job pods are deleted once they finish, so there is no long-lived pod to stat and
+# check_init would only ever report "no pod". What matters there is that the
+# chown survived into the Job templates. If init-backups-data disappears, a PVC
+# recreated with a fresh root-owned /backups makes every backup fail - and the
+# first scheduled run after a node reboot is where that shows up.
+for cj in backup-postgres backup-mongodb; do
+  init_name="$(kubectl -n "$NAMESPACE" get cronjob "$cj" \
+    -o jsonpath='{.spec.jobTemplate.spec.template.spec.initContainers[0].name}' 2>/dev/null || true)"
+  case "$init_name" in
+    init-backups-data) green "    $cj: init-backups-data present (chowns /backups to 999:999)" ;;
+    *) red "    $cj: expected init-backups-data, found '${init_name:-none}' - backups PVC would stay root-owned"; fail=1 ;;
+  esac
+done
 
 echo
 if [ "$fail" -eq 0 ]; then
