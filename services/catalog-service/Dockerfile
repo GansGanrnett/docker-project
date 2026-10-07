@@ -1,5 +1,5 @@
 # === Этап 1: Компиляция одиночного бинарного файла ===
-FROM golang:1.21-alpine AS builder
+FROM golang:1.27-alpine AS builder
 WORKDIR /src
 
 # Модульный режим: требуется реальными HTTP-метриками
@@ -12,7 +12,7 @@ COPY cmd/main.go ./cmd/main.go
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/catalog-app ./cmd
 
 # === Этап 2: Финальный продакшн рантайм ===
-FROM alpine:3.19
+FROM alpine:3.24
 WORKDIR /app
 RUN apk add --no-cache curl
 COPY --from=builder /app/catalog-app .
