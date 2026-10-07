@@ -476,3 +476,22 @@ class TestMessageHandling:
         with main.aggregates_lock:
             assert main.aggregates["total_orders_count"] == before + 1
         assert fake.nacks == []
+
+
+class TestBufferBoundary:
+    """Тест границы буфера deque(maxlen=5) (#45, F-28)."""
+
+    def test_paid_orders_bounds_maxlen(self):
+        from collections import deque
+        with main.aggregates_lock:
+            main.aggregates["total_sales_amount"] = 0.0
+            main.aggregates["total_orders_count"] = 0
+            main.aggregates["paid_orders"] = deque(maxlen=5)
+
+        for i in range(1, 7):
+            with main.aggregates_lock:
+                main.aggregates["paid_orders"].append(f"order_{i}")
+
+        assert len(main.aggregates["paid_orders"]) == 5
+        expected = ["order_2", "order_3", "order_4", "order_5", "order_6"]
+        assert list(main.aggregates["paid_orders"]) == expected
