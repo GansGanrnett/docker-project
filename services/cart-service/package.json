@@ -8,7 +8,7 @@
     "test": "node --test test/readiness.test.js"
   },
   "dependencies": {
-    "dotenv": "^16.4.5",
+    "dotenv": "^18.0.5",
     "express": "^5.2.1",
     "prom-client": "^15.1.0",
     "redis": "^4.6.13"
