@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: docker-project
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/GansGanrnett/docker-project.git
+    targetRevision: main
+    path: infrastructure/kubernetes
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true
+  # sync manual — не меняем до rollback-теста и sealed-secrets
+  ignoreDifferences:
+  - group: ""
+    kind: Secret
+    jsonPointers:
+    - /data
+    - /stringData
