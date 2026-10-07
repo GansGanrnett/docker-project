@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Response
 import pika
 from pika.exceptions import AMQPConnectionError
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
+from collections import deque
 
 
 @asynccontextmanager
@@ -60,7 +61,7 @@ PREFETCH_COUNT = 1
 aggregates = {
     "total_sales_amount": 0.0,
     "total_orders_count": 0,
-    "paid_orders": []
+    "paid_orders": deque(maxlen=5)
 }
 
 aggregates_lock = threading.Lock()
@@ -201,7 +202,7 @@ def get_analytics_summary():
             "status": "HEALTHY",
             "sales_volume_usd": round(aggregates["total_sales_amount"], 2),
             "total_processed_transactions": aggregates["total_orders_count"],
-            "recent_paid_orders": aggregates["paid_orders"][-5:]
+            "recent_paid_orders": list(aggregates["paid_orders"])[-5:]
         }
 
 
