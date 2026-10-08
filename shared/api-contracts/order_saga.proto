@@ -1,0 +1,23 @@
+syntax = "proto3";
+package saga;
+
+// Saga state machine (matches AC #48)
+enum SagaState {
+  ORDER_CREATED = 0;
+  STOCK_RESERVED = 1;
+  STOCK_RESERVATION_FAILED = 2;
+  PAYMENT_PROCESSED = 3;
+  PAYMENT_FAILED = 4;
+  ORDER_COMPLETED = 5;
+  ORDER_COMPENSATED = 6;
+}
+
+message OrderSagaMessage {
+  string saga_id = 1;        // X-Correlation-ID (cross-service)
+  string order_id = 2;
+  int32 product_id = 3;
+  int32 quantity = 4;
+  double total_amount = 5;    // note: decimal preferred; double for proto compat
+  string current_state = 6;   // SagaState enum name
+  int64 timestamp = 7;       // epoch ms
+}
