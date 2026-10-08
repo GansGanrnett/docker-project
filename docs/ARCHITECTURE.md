@@ -188,6 +188,8 @@ flowchart TD
 
 Единый контракт: **exchange `payment.events`** типа `topic`, durable.
 
+> См. контракт событий в `shared/api-contracts/order_saga.proto` (#48, PR-1); спецификация корреляции — `docs/design/correlation-spec.md`.
+
 ### Карта exchange, очередей и маршрутизации
 
 | Объект | Тип | Назначение |
