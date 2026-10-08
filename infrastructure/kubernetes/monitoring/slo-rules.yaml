@@ -35,10 +35,8 @@ groups:
       - record: gateway_latency_p95_7d
         expr: |
           histogram_quantile(0.95,
-            sum(rate(http_request_duration_seconds_bucket{route!~"/health|/ready|/metrics"}[7d])) by (le, route)
+            sum(rate(api_gateway_http_request_duration_seconds_bucket{route!~"/health|/ready|/metrics"}[7d])) by (le, route)
           )
-        # Note: gateway has NO histogram currently (only Counter api_gateway_http_requests_total).
-        # This expression is template/reference; real gateway histogram requires adding Histogram metric.
 
       - record: payment_latency_p95_7d
         expr: |
@@ -56,7 +54,6 @@ groups:
           summary: "SLO availability breach (7d window < 99.5%)"
 
       # Latency alert (SLO breach if p95 > 500ms = 0.5s)
-      # Note: gateway_latency_p95_7d requires histogram — placeholder.
       - alert: SLO_LatencyBreach
         expr: |
           (payment_latency_p95_7d > 0.5) or (gateway_latency_p95_7d > 0.5)
