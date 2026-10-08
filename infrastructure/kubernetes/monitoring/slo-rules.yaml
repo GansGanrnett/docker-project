@@ -1,0 +1,77 @@
+groups:
+  - name: slo_critical_services
+    rules:
+      # Availability SLI (7d window): 1 - (5xx / total)
+      # Gateway: Counter label = status (not code)
+      - record: gateway_availability_7d
+        expr: |
+          1 - (
+            sum(rate(api_gateway_http_requests_total{route!~"/health|/ready|/metrics",status=~"5.."}[7d]))
+            /
+            sum(rate(api_gateway_http_requests_total{route!~"/health|/ready|/metrics"}[7d]))
+          )
+
+      # Payment: Counter label = code
+      - record: payment_availability_7d
+        expr: |
+          1 - (
+            sum(rate(http_requests_total{route!~"/health|/ready|/metrics",code=~"5.."}[7d]))
+            /
+            sum(rate(http_requests_total{route!~"/health|/ready|/metrics"}[7d]))
+          )
+
+      # Order: Counter label = code (from .NET middleware config)
+      - record: order_availability_7d
+        expr: |
+          1 - (
+            sum(rate(http_requests_total{route!~"/health|/ready|/metrics",code=~"5.."}[7d]))
+            /
+            sum(rate(http_requests_total{route!~"/health|/ready|/metrics"}[7d]))
+          )
+
+      # Latency p95 (7d) — Histogram labels assumed: method, route (gateway/payment);
+      # Order-service middleware label names not fully shown in Program.cs (only Counter shown).
+      # Using method+route as standard middleware labels.
+      - record: gateway_latency_p95_7d
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{route!~"/health|/ready|/metrics"}[7d])) by (le, route)
+          )
+        # Note: gateway has NO histogram currently (only Counter api_gateway_http_requests_total).
+        # This expression is template/reference; real gateway histogram requires adding Histogram metric.
+
+      - record: payment_latency_p95_7d
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{route!~"/health|/ready|/metrics"}[7d])) by (le, route)
+          )
+
+      # Availability alert (SLO breach if < 99.5%)
+      - alert: SLO_AvailabilityBreach
+        expr: gateway_availability_7d < 0.995 or payment_availability_7d < 0.995 or order_availability_7d < 0.995
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SLO availability breach (7d window < 99.5%)"
+
+      # Latency alert (SLO breach if p95 > 500ms = 0.5s)
+      # Note: gateway_latency_p95_7d requires histogram — placeholder.
+      - alert: SLO_LatencyBreach
+        expr: |
+          (payment_latency_p95_7d > 0.5) or (gateway_latency_p95_7d > 0.5)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SLO latency p95 breach (> 500ms, 7d)"
+
+      # Service up gauge alert
+      # Note: order_up / payment_up / gateway readiness are separate Gauges.
+      - alert: ServiceDown
+        expr: order_up == 0 or payment_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical service down (order or payment)"

@@ -1,0 +1,17 @@
+# Grafana SLI/SLO dashboard for critical services (Phase 2)
+# Manual deploy after Phase 1 Alertmanager; no ArgoCD sync change.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slo-dashboard
+  namespace: monitoring
+data:
+  dashboard.json: |-
+    {
+      "title": "Critical Services SLO",
+      "panels": [
+        {"title": "Availability (7d)", "targets": [{"expr": "gateway_availability_7d"}]},
+        {"title": "Latency p95 (7d)",  "targets": [{"expr": "payment_latency_p95_7d"}]},
+        {"title": "SLO Breach Alert", "targets": [{"expr": "SLO_AvailabilityBreach"}]}
+      ]
+    }
