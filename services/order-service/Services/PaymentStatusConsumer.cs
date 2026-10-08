@@ -62,7 +62,7 @@ namespace OrderService.Services
         private readonly IMongoCollection<Order> _ordersCollection;
         private readonly SemaphoreSlim _processingLock = new SemaphoreSlim(1, 1);
         private IConnection? _connection;
-        private IModel? _channel;
+        private IChannel? _channel;
 
         public PaymentStatusConsumer(ILogger<PaymentStatusConsumer> logger, IMongoCollection<Order> ordersCollection)
         {
@@ -70,7 +70,7 @@ namespace OrderService.Services
             _ordersCollection = ordersCollection;
         }
 
-        private void InitRabbitMQ()
+        private async Task InitRabbitMQAsync(CancellationToken cancellationToken = default)
         {
             var rabbitMqUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL")
                 ?? throw new InvalidOperationException("RABBITMQ_URL is not set");
@@ -78,35 +78,26 @@ namespace OrderService.Services
             {
                 Uri = new Uri(rabbitMqUrl),
                 AutomaticRecoveryEnabled = true,
-                NetworkRecoveryInterval = TimeSpan.FromSeconds(5),
-                DispatchConsumersAsync = false
+                NetworkRecoveryInterval = TimeSpan.FromSeconds(5)
             };
 
-            _connection = factory.CreateConnection();
-            _channel = _connection.CreateModel();
+            _connection = await factory.CreateConnectionAsync(cancellationToken);
+            _channel = await _connection.CreateChannelAsync(new CreateChannelOptions(publisherConfirmationsEnabled: false, publisherConfirmationTrackingEnabled: false), cancellationToken);
 
-            // Р•РґРёРЅС‹Р№ topic-exchange СЃ payment-service: payment.main РїСѓР±Р»РёРєСѓРµС‚ СЃРѕР±С‹С‚РёСЏ
-            // СЃ routing key payment.success / payment.declined
-            _channel.ExchangeDeclare(exchange: PAYMENT_EXCHANGE, type: "topic", durable: true);
-            _channel.ExchangeDeclare(exchange: DEAD_LETTER_EXCHANGE, type: "fanout", durable: true);
-            _channel.QueueDeclare(queue: DEAD_LETTER_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: null);
-            _channel.QueueBind(queue: DEAD_LETTER_QUEUE, exchange: DEAD_LETTER_EXCHANGE, routingKey: "");
+            await _channel.ExchangeDeclareAsync(exchange: PAYMENT_EXCHANGE, type: ExchangeType.Topic, durable: true, cancellationToken: cancellationToken);
+            await _channel.ExchangeDeclareAsync(exchange: DEAD_LETTER_EXCHANGE, type: ExchangeType.Fanout, durable: true, cancellationToken: cancellationToken);
+            await _channel.QueueDeclareAsync(queue: DEAD_LETTER_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: null, cancellationToken: cancellationToken);
+            await _channel.QueueBindAsync(queue: DEAD_LETTER_QUEUE, exchange: DEAD_LETTER_EXCHANGE, routingKey: "", cancellationToken: cancellationToken);
 
             // Обе очереди - старая и .v2 - остаются привязаны к payment.events,
             // просто старую больше никто не объявляет кодом. Она продолжает
             // принимать публикации и накапливать их до очистки: для тестового
             // стенда это приемлемо, и обратная совместимость событий важнее.
-            var dlqArgs = new Dictionary<string, object> { { "x-dead-letter-exchange", DEAD_LETTER_EXCHANGE } };
-            _channel.QueueDeclare(queue: PAYMENT_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: dlqArgs);
-            _channel.QueueBind(queue: PAYMENT_QUEUE, exchange: PAYMENT_EXCHANGE, routingKey: ROUTING_PAYMENT_ALL);
+            var dlqArgs = new Dictionary<string, object?> { { "x-dead-letter-exchange", DEAD_LETTER_EXCHANGE } };
+            await _channel.QueueDeclareAsync(queue: PAYMENT_QUEUE, durable: true, exclusive: false, autoDelete: false, arguments: dlqArgs, cancellationToken: cancellationToken);
+            await _channel.QueueBindAsync(queue: PAYMENT_QUEUE, exchange: PAYMENT_EXCHANGE, routingKey: ROUTING_PAYMENT_ALL, cancellationToken: cancellationToken);
 
-            // Без prefetch брокер отдаёт все неподтверждённые сообщения в
-            // память консьюмера, а ack у нас происходит только после записи в
-            // MongoDB. При медленной базе пачка копится в куче, и обрыв
-            // процесса теряет всё, что не подтверждено. prefetch=1 держит
-            // ровно одно сообщение в работе и одновременно снимает гонку за
-            // один IModel между обработчиками (issue #37, F-06/F-07).
-            _channel.BasicQos(0, PREFETCH_COUNT, global: false);
+            await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: PREFETCH_COUNT, global: false, cancellationToken: cancellationToken);
 
             _logger.LogInformation("[RABBITMQ-CONSUMER] Exchange '{Exchange}' bound to queue '{Queue}' with routing key '{Routing}', prefetch {Prefetch}.",
                 PAYMENT_EXCHANGE, PAYMENT_QUEUE, ROUTING_PAYMENT_ALL, PREFETCH_COUNT);
@@ -124,13 +115,13 @@ namespace OrderService.Services
                 {
                     if (_connection == null || _channel == null || !_connection.IsOpen)
                     {
-                        InitRabbitMQ();
+                        await InitRabbitMQAsync(stoppingToken);
                     }
 
-                    var consumer = new EventingBasicConsumer(_channel);
-                    consumer.Received += OnMessageReceived;
+                    var consumer = new AsyncEventingBasicConsumer(_channel);
+                    consumer.ReceivedAsync += async (model, ea) => await OnMessageReceivedAsync(model, ea);
 
-                    _channel.BasicConsume(queue: PAYMENT_QUEUE, autoAck: false, consumer: consumer);
+                    await _channel.BasicConsumeAsync(queue: PAYMENT_QUEUE, autoAck: false, consumer: consumer, cancellationToken: stoppingToken);
                     _logger.LogInformation("[RABBITMQ-CONSUMER] Started consuming queue '{Queue}'.", PAYMENT_QUEUE);
 
                     while (!stoppingToken.IsCancellationRequested && _connection.IsOpen)
@@ -146,10 +137,8 @@ namespace OrderService.Services
             }
         }
 
-        private async void OnMessageReceived(object? sender, BasicDeliverEventArgs ea)
+        private async Task OnMessageReceivedAsync(object? sender, BasicDeliverEventArgs ea)
         {
-            // РЎРµСЂРёР°Р»РёР·Р°С†РёСЏ РѕР±СЂР°Р±РѕС‚РєРё РЅР° РєР°РЅР°Р»Рµ: РІ .NET-РєР»РёРµРЅС‚Рµ RabbitMQ РЅРµР»СЊР·СЏ
-            // Р±РµР·РѕРїР°СЃРЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РѕРґРёРЅ IModel РёР· РЅРµСЃРєРѕР»СЊРєРёС… РїРѕС‚РѕРєРѕРІ РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ
             await _processingLock.WaitAsync();
             try
             {
@@ -197,7 +186,7 @@ namespace OrderService.Services
 
         internal async Task HandleMessageAsync(object? sender, BasicDeliverEventArgs ea)
         {
-            var channel = sender is EventingBasicConsumer c ? c.Model : _channel;
+            var channel = sender is AsyncEventingBasicConsumer c ? c.Channel : _channel;
             if (channel == null) return;
 
             var body = ea.Body.ToArray();
@@ -243,20 +232,20 @@ namespace OrderService.Services
                     }
                 }
 
-                channel.BasicAck(deliveryTag: ea.DeliveryTag, multiple: false);
+                await channel.BasicAckAsync(deliveryTag: ea.DeliveryTag, multiple: false);
             }
             catch (Exception ex)
             {
                 _logger.LogError("[RABBITMQ-CONSUMER-ERROR] Business logic failed: {Message}. Sending to DLQ.", ex.Message);
                 // Не зацепляем requeue: бесконечные сообщения мёртвут в RabbitMQ.
-                channel.BasicNack(deliveryTag: ea.DeliveryTag, multiple: false, requeue: false);
+                await channel.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: false);
             }
         }
 
         public override void Dispose()
         {
-            _channel?.Close();
-            _connection?.Close();
+            try { _channel?.CloseAsync().GetAwaiter().GetResult(); } catch { }
+            try { _connection?.CloseAsync().GetAwaiter().GetResult(); } catch { }
             base.Dispose();
         }
     }
