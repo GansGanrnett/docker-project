@@ -18,6 +18,13 @@ const httpRequestCounter = new client.Counter({
     labelNames: ['method', 'route', 'status']
 });
 
+const httpRequestDuration = new client.Histogram({
+    name: 'api_gateway_http_request_duration_seconds',
+    help: 'HTTP request latency in seconds',
+    labelNames: ['method', 'route', 'status'],
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+});
+
 // Probe and scrape traffic is not business traffic. kubelet hits /health and
 // /ready every 10s, and Prometheus scrapes on its own schedule; counting them
 // would leave api_gateway_http_requests_total almost entirely probe noise with
@@ -26,9 +33,15 @@ const UNCOUNTED_PATHS = new Set(['/health', '/ready', '/metrics']);
 
 app.use((req, res, next) => {
     console.log(`[API-GATEWAY] ${req.method} ${req.url}`);
+    const endTimer = httpRequestDuration.labels(req.method, req.path, '').startTimer();
     if (!UNCOUNTED_PATHS.has(req.path)) {
         res.on('finish', () => {
             httpRequestCounter.labels(req.method, req.path, res.statusCode).inc();
+            endTimer({ status: res.statusCode });
+        });
+    } else {
+        res.on('finish', () => {
+            endTimer({ status: res.statusCode });
         });
     }
     next();
