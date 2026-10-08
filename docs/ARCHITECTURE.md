@@ -290,24 +290,28 @@ sequenceDiagram
 
 ## 6. Известные расхождения и отложенные задачи
 
-Актуально по main (проверка: 2026-10). Закрытые за время аудита (F-01/F-02/F-03,
-F-13, F-14/F-15/F-16, F-22) закрыты через PR #33/#34/#35/#36/#44/#79/#80 и вынесены в
-эпик **#38**; здесь — остающиеся.
+Актуально по `origin/main` (`c3e3de9`, merge #92, 2026-10-08). Закрытые за время аудита: **F-01, F-02, F-03, F-04, F-06, F-07, F-13, F-14/F-15, F-17, F-22, F-25, F-28, F-30, F-32, F-33, F-34, F-35, F-36, F-37, F-40, F-41, F-43** — вынесены в эпик **#38** через PR #33/#34/#35/#36/#44/#79/#80; здесь — остающиеся.
 
-1. **Сквозная трассировка X-Correlation-ID отсутствует.**
-   Запланирована как часть saga-оркестратора: issue **#48**. Черновик (генерация ID в шлюзе,
-   проброс в консьюмеры RabbitMQ, CorrelationIdFilter в auth-service) существовал в ветке
-   feature-saga-tracing, закрытой 2026-10-02 как устаревшей и не влитой; код не берётся из
-   этой ветки, сохраняется идея проброса через асинхронную границу.
-2. **Analytics — в памяти.** analytics-service агрегирует paid_orders в
-   deque(maxlen=5) (issue #45, PR #81): память ограничена, но состояние обнуляется при
-   рестарте. F-22 закрыт для payment-service (персистентность в PostgreSQL, PR #79/#80);
-   для аналитики персистентность пока не реализована — см. эпик **#38**.
-3. **Root-пользователь** в Dockerfile'ах Python/.NET сервисов — не используется USER
-   (в отличие от node-сервисов).
-4. **Идемпотентность платежей** теперь в Redis (issue #41, PR #76) и в payment-service
-   с персистентностью в PostgreSQL (PR #79/#80) — в памяти не переживает только
-   analytics-service (п. 2).
+**Открытые находки:**
+- **F-16** — circuit breaker на платёжном пути (payment-service / Gateway).
+- **F-23** — catalog-db (PostgreSQL auth/catalog race / настроек).
+- **F-39** — три копии `public.pem` (Auth Service, Gateway, Order Service) — требуется ротация через `git filter-repo`.
+- **F-42** — `order.proto` (контракт событий между Order и Payment) — не согласован в Swagger.
+- **F-44** — `.editorconfig` отсутствует в корне.
+- **F-45** — ссылка на saga-оркестратор (см. **#48**).
+
+**Отложенные / не влитые:**
+- **#31** — k8s: auth и catalog Postgres race за один PV (данные могут попасть на эфемерный volume).
+- **#48** — Saga-оркестратор и сквозная трассировка X-Correlation-ID. Черновик `feature-saga-tracing` (генерация ID в шлюзе, проброс в RabbitMQ, `CorrelationIdFilter`) существовал, но ветка закрыта 2026-10-02 как устаревшая и **не влитая**; код не берётся из этой ветки, сохраняется только идея проброса через асинхронную границу (см. #48).
+- **#58** — Go 1.25 (обновление Catalog Service, входило в #86).
+
+**Event topology (RabbitMQ):** разделены DLX — `orders.payment_statuses.dlx` (платёжные статусы) и `orders.analytics.dlx` (аналитика); exchange `payment.events` (topic, durable); очереди `orders.payment_statuses` и `orders.analytics` с binding `payment.*` / `payment.success`; DLQ `orders.payment_statuses.dlq`, `orders.analytics.dlq`; ack только после успешной записи, ошибка → `basic_nack(requeue=false)` → DLQ. Схема в §3 и §4 актуальна.
+
+**Payment persistence:** Payment Service использует PostgreSQL (SQLAlchemy) как источник правды и Redis (`payment-redis-url`, `IdempotencyStore`) для идемпотентности (issue #41 / PR #76); analytics-service в памяти (`deque(maxlen=5)` — F-22 закрыт для payment, для аналитики персистентность не реализована — см. **#38**). `replicaCount: 2` для `payment-service` (`values.yaml`, `deployment.yaml`);
+
+**Ссылки на открытые issue:** #31 (PV race), #38 (эпик аудита), #48 (Saga / tracing), #58 (Go 1.25, внутри #86), #86 (dependency upgrades / #58, #74).
+
+**Не использован / не влит:** `feature-saga-tracing`; не ссылаться на его код — только через #48.
 
 ---
 
