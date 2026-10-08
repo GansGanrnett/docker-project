@@ -1,0 +1,40 @@
+# kube-prometheus-stack values for alerting (Phase 1 monitoring)
+# Install: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+# helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack -f kube-prometheus-stack-values.yaml -n monitoring
+alertmanager:
+  enabled: true
+  config:
+    global:
+      resolve_timeout: 5m
+      telegram_api_url: "https://api.telegram.org"
+    route:
+      group_by: ["alertname", "service", "severity"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: default
+      routes:
+        - receiver: telegram-critical
+          match:
+            severity: critical
+          continue: true
+        - receiver: telegram-warning
+          match:
+            severity: warning
+    receivers:
+      - name: default
+        webhook_configs:
+          - url: "http://pager-duty.local/trigger"
+            send_resolved: true
+      - name: telegram-critical
+        webhook_configs:
+          - url: "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+            send_resolved: false
+      - name: telegram-warning
+        webhook_configs:
+          - url: "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+            send_resolved: true
+  extraSecretMounts:
+    - name: alertmanager-telegram-secret
+      mountPath: "/etc/alertmanager/telegram"
+      secretName: alertmanager-telegram-secret
