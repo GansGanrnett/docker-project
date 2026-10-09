@@ -33,6 +33,13 @@ const UNCOUNTED_PATHS = new Set(['/health', '/ready', '/metrics']);
 
 app.use((req, res, next) => {
     console.log(`[API-GATEWAY] ${req.method} ${req.url}`);
+    // Correlation-ID: generate if missing, propagate unchanged
+    let correlationId = req.headers['x-correlation-id'] || req.headers['X-Correlation-ID'];
+    if (!correlationId) {
+        correlationId = require('crypto').randomUUID();
+    }
+    req.correlationId = correlationId;
+    res.setHeader('X-Correlation-ID', correlationId);
     const endTimer = httpRequestDuration.labels(req.method, req.path, '').startTimer();
     if (!UNCOUNTED_PATHS.has(req.path)) {
         res.on('finish', () => {
@@ -111,24 +118,36 @@ app.use('/api/v1/auth', loginLimiter, createProxyMiddleware({
     target: process.env.AUTH_SERVICE_URL || 'http://auth-service:8081',
     changeOrigin: true,
     pathRewrite: { '^/api/v1/auth': '' },
+    onProxyReq: (proxyReq, req) => {
+        proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    },
 }));
 
 app.use('/api/v1/cart', verifyToken(), createProxyMiddleware({
     target: process.env.CART_SERVICE_URL || 'http://cart-service:8083',
     changeOrigin: true,
+    onProxyReq: (proxyReq, req) => {
+        if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    },
     pathRewrite: { '^/api/v1/cart': '' },
 }));
 
 app.use('/api/v1/payments', verifyToken('ROLE_ADMIN'), createProxyMiddleware({
     target: process.env.PAYMENT_SERVICE_URL || 'http://payment-service:8085',
     changeOrigin: true,
+    onProxyReq: (proxyReq, req) => {
+        if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    },
     pathRewrite: { '^/api/v1/payments': '/api/v1/internal/payments/process' },
 }));
 
 // ИСПРАВЛЕНО: Прямое прозрачное проксирование без pathRewrite, ломающего вложенные пути FastAPI
 app.use('/api/v1/analytics', verifyToken('ROLE_ADMIN'), createProxyMiddleware({
     target: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8000',
-    changeOrigin: true
+    changeOrigin: true,
+    onProxyReq: (proxyReq, req) => {
+        if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    }
 }));
 
 app.use((req, res, next) => {
@@ -137,6 +156,9 @@ app.use((req, res, next) => {
             createProxyMiddleware({
                 target: process.env.ORDER_SERVICE_URL || 'http://order-service:8084',
                 changeOrigin: true,
+                onProxyReq: (proxyReq, req) => {
+                    if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+                },
             })(req, res, next);
         });
     }
