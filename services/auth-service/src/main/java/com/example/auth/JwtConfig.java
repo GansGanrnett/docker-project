@@ -25,6 +25,16 @@ public class JwtConfig {
 
     @Bean
     public Algorithm jwtAlgorithm() throws Exception {
+        if (!privateKeyResource.exists()) {
+            throw new IllegalStateException("auth-service startup failed: private.pem missing. " +
+                    "Generate via init-job / mount Secret (docs/ARCHITECTURE.md §1). " +
+                    "Path: " + privateKeyResource);
+        }
+        if (!publicKeyResource.exists()) {
+            throw new IllegalStateException("auth-service startup failed: public.pem missing. " +
+                    "Generate via init-job / mount Secret (docs/ARCHITECTURE.md §1). " +
+                    "Path: " + publicKeyResource);
+        }
         String privateKeyPem = new String(privateKeyResource.getInputStream().readAllBytes(), StandardCharsets.UTF_8)
                 .replace("-----BEGIN PRIVATE KEY-----", "")
                 .replace("-----END PRIVATE KEY-----", "")
