@@ -55,31 +55,6 @@ spec:
     path: "/mnt/data/postgres-auth"
     type: DirectoryOrCreate
 ---
-# Catalog database. This PV was missing entirely: catalog-postgres declares a
-# 5Gi volumeClaimTemplate, and with no PV reserved for it the claim either took
-# a dynamic volume or stole the RabbitMQ/auth directory depending on timing.
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: postgres-catalog-pv
-  labels:
-    type: local
-    app: catalog-postgres
-spec:
-  storageClassName: manual
-  capacity:
-    storage: 5Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  volumeMode: Filesystem
-  claimRef:
-    namespace: default
-    name: data-catalog-postgres-0
-  hostPath:
-    path: "/mnt/data/postgres-catalog"
-    type: DirectoryOrCreate
----
 # Payment database (F-22, issue #41). Same static reservation pattern as the
 # two other PostgreSQL instances: without a claimRef the claim would race for
 # the RabbitMQ/auth volumes (see the comment at the top of this file).

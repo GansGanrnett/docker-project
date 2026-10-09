@@ -6,7 +6,6 @@ networks:
 
 volumes:
   postgres_auth_data:
-  postgres_catalog_data:
   mongo_order_data:
   redis_data:
   rabbitmq_data:
@@ -32,28 +31,6 @@ services:
       - ecommerce-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${AUTH_DB_USER} -d $${AUTH_DB_NAME}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  catalog-db:
-    image: postgres:15-alpine
-    container_name: catalog-postgres
-    environment:
-      POSTGRES_USER: ${CATALOG_DB_USER}
-      POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD}
-      POSTGRES_DB: ${CATALOG_DB_NAME}
-    # Убираем trust для localhost: см. issue #12 и infrastructure/postgres/pg_hba.conf
-    command: ["postgres", "-c", "hba_file=/etc/postgres/pg_hba.conf"]
-    ports:
-      - "127.0.0.1:5433:5432"
-    volumes:
-      - postgres_catalog_data:/var/lib/postgresql/data
-      - ./infrastructure/postgres/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
-    networks:
-      - ecommerce-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${CATALOG_DB_USER} -d ${CATALOG_DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -12,10 +12,6 @@ infrastructure:
     host: "auth-postgres-service"
     name: "auth_db"
     user: "postgres"
-  catalogDb:
-    host: "catalog-postgres-service"
-    name: "catalog_db"
-    user: "postgres"
   redis:
     host: "cart-redis-service"
     port: 6379

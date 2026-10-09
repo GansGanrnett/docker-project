@@ -1,7 +1,7 @@
 # ConfigMap с hardened pg_hba.conf (issue #12).
 # Применять ДО postgres StatefulSet:
 #   kubectl apply -f infrastructure/kubernetes/base/pg-hba-configmap.yaml
-# Файл монтируется в оба StatefulSet: auth-postgres, catalog-postgres.
+# Файл монтируется в auth-postgres StatefulSet.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,7 +23,7 @@ data:
     # Порядок важен: postgres применяет первое совпавшее правило.
     #
     # Значения хостов и пользователей оставлены пустыми (all/all), чтобы один файл
-    # подходил обоим StatefulSet — auth-postgres и catalog-postgres.
+    # подходил StatefulSet auth-postgres.
 
     # --- Локальные подключения через unix-сокет ---
     local   all             all                                     scram-sha-256
