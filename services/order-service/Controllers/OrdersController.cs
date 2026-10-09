@@ -100,7 +100,7 @@ namespace OrderService.Controllers
             var username = User.Identity?.Name;
             if (string.IsNullOrEmpty(username)) return Unauthorized(new { error = "Invalid token" });
 
-            var orders = await _ordersCollection.Find(o => o.Username == username).ToListAsync();
+            var orders = await _ordersCollection.Find(o => o.Username == username).Limit(50).ToListAsync();
             return Ok(orders);
         }
 
