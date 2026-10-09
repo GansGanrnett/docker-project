@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Response
 import pika
 from pika.exceptions import AMQPConnectionError
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-from collections import deque
+from collections import deque, OrderedDict
 
 
 @asynccontextmanager
@@ -65,6 +65,11 @@ aggregates = {
 }
 
 aggregates_lock = threading.Lock()
+
+# F-4: in-memory dedup for analytics idempotency.
+# Lost on restart — persistent store out of scope for F-4.
+# OrderedDict keeps insertion order; oldest removed when > 10000.
+processed_order_ids = OrderedDict()
 
 # Пауза между попытками переподключения к брокеру.
 RECONNECT_DELAY_SECONDS = 5.0
@@ -271,10 +276,23 @@ def _handle_message(ch, method, properties, body):
 
         print(f"[ANALYTICS] Processed payment event for Order ID: {order_id}, Amount: ${amount}")
 
-        with aggregates_lock:
-            aggregates["total_sales_amount"] += amount
-            aggregates["total_orders_count"] += 1
-            aggregates["paid_orders"].append(order_id)
+        is_duplicate = False
+        if order_id is not None and order_id in processed_order_ids:
+            is_duplicate = True
+            print(f"[ANALYTICS] Duplicate skipped for Order ID: {order_id}")
+
+        if not is_duplicate:
+            with aggregates_lock:
+                aggregates["total_sales_amount"] += amount
+                aggregates["total_orders_count"] += 1
+                aggregates["paid_orders"].append(order_id)
+                processed_order_ids[order_id] = True
+                if len(processed_order_ids) > 10000:
+                    processed_order_ids.popitem(last=False)
+        else:
+            # Дубликат: агрегаты не меняем, но счётчик событий учитывает все входящие.
+            pass
+
         PAYMENT_EVENTS.inc()
 
         # Ack ТОЛЬКО после успешной обработки
