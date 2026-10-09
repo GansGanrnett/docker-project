@@ -112,6 +112,15 @@ try
         await cursor.ForEachAsync(doc => existing.Add(doc["name"].AsString));
     }
 
+    if (!existing.Contains("username_index"))
+    {
+        var usernameModel = new CreateIndexModel<OrderService.Models.Order>(
+            Builders<OrderService.Models.Order>.IndexKeys.Ascending(o => o.Username),
+            new CreateIndexOptions { Name = "username_index" });
+        await orders.Indexes.CreateOneAsync(usernameModel);
+        app.Logger.LogInformation("Created index {Index} on orders collection.", "username_index");
+    }
+
     if (!existing.Contains(OrderStatusMigration.StatusChangedAtIndexName))
     {
         var model = new CreateIndexModel<OrderService.Models.Order>(
