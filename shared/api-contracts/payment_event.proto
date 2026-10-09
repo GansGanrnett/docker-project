@@ -1,0 +1,12 @@
+syntax = "proto3";
+package saga;
+
+message PaymentEvent {
+  string saga_id = 1;
+  string order_id = 2;
+  int32 product_id = 3;
+  int32 quantity = 4;
+  double total_amount = 5;
+  string status = 6;  // PAYMENT_PROCESSED / PAYMENT_FAILED / PAYMENT_TIMEOUT
+  int64 timestamp = 7;
+}
