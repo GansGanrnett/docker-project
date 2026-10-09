@@ -39,7 +39,7 @@ public class CorrelationIdFilter implements Filter {
         // optionally validate format (UUID v4 pattern); skip strict check for brevity
 
         // add to MDC for this request thread
-        org.slf MDC.put("X-Correlation-ID", correlationId);
+        org.slf4j.MDC.put("X-Correlation-ID", correlationId);
 
         // ensure response includes the header
         response.setHeader("X-Correlation-ID", correlationId);
@@ -49,7 +49,7 @@ public class CorrelationIdFilter implements Filter {
         filterChain.doFilter(request, response);
 
         // clear MDC after request
-        MDC.remove("X-Correlation-ID");
+        org.slf4j.MDC.remove("X-Correlation-ID");
     }
 
     @Override
