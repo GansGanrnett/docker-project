@@ -1,6 +1,6 @@
 # Значения для order-service.
 # Реальный образ приложения (а не nginx-заготовка helm create).
-replicaCount: 2
+replicaCount: 1
 image:
   repository: ghcr.io/gansganrnett/docker-project/order-service
   pullPolicy: IfNotPresent
