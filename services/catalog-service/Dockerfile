@@ -1,5 +1,5 @@
 # === Этап 1: Компиляция одиночного бинарного файла ===
-FROM golang:1.27-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /src
 
 # Модульный режим: требуется реальными HTTP-метриками

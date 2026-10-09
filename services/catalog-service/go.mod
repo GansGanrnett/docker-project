@@ -1,8 +1,8 @@
 module github.com/GansGanrnett/docker-project/services/catalog-service
 
-go 1.21
+go 1.25
 
-require github.com/prometheus/client_golang v1.19.0
+require github.com/prometheus/client_golang v1.24.1
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
