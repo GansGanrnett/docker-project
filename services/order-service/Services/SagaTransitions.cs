@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using OrderService.Models;
 
 namespace OrderService.Services
 {
