@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Http;
+
 namespace ApiGateway.RateLimiting;
 
 public class RateLimitMiddleware
