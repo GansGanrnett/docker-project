@@ -555,14 +555,14 @@ jobs:
 
       - name: Build order-service (.NET)
         working-directory: services/order-service
-        run: dotnet build OrderService.csproj --nologo --verbosity quiet
+        run: dotnet build -c Release OrderService.csproj --nologo --verbosity quiet
 
       - name: Build order-service tests (.NET)
         # Тестовый проект лежит в подкаталоге, поэтому сборка сервиса его не
         # трогает. Без отдельного шага "dotnet test --no-build" ниже прогонял
         # бы пустую сборку и завершался кодом 0, не выполнив ни одного теста.
         working-directory: services/order-service
-        run: dotnet build tests/OrderService.Tests/OrderService.Tests.csproj --nologo --verbosity quiet
+        run: dotnet build -c Release tests/OrderService.Tests/OrderService.Tests.csproj --nologo --verbosity quiet
 
       - name: Test order-service (.NET)
         working-directory: services/order-service
