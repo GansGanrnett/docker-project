@@ -103,9 +103,9 @@ builder.Services.AddHttpClient("catalog", client =>
 .AddPolicyHandler(GetRetryPolicy())     // внешний: retry
 .AddPolicyHandler(GetBreakerPolicy()); // внутренний: breaker
 
-// Gauge доступности breaker: 1=up, 0=open, 0.5=half-open
-private static readonly Gauge _breakerGauge = Metrics.CreateGauge("order_catalog_breaker_state", "Breaker state for catalog dependency (1=up, 0=open, 0.5=half-open)");
-_breakerGauge.Set(1);
+// Gauge доступности breaker (стандарт): 1=open/broken, 0=healthy/closed, 0.5=half-open
+private static readonly Gauge _breakerGauge = Metrics.CreateGauge("order_catalog_breaker_state", "Breaker state for catalog dependency (1=open, 0=closed, 0.5=half-open)");
+_breakerGauge.Set(0);
 
 static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
 {
@@ -113,7 +113,7 @@ static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
         .Handle<HttpRequestException>()
         .OrResult<HttpResponseMessage>(r => !r.IsSuccessStatusCode)
         .WaitAndRetryAsync(3, retryAttempt =>
-            TimeSpan.FromMilliseconds(200 + retryAttempt * 200 + new Random().Next(0, 400)));
+            TimeSpan.FromMilliseconds(200 + retryAttempt * 200 + Random.Shared.Next(0, 400)));
 }
 
 static IAsyncPolicy<HttpResponseMessage> GetBreakerPolicy()
@@ -125,9 +125,9 @@ static IAsyncPolicy<HttpResponseMessage> GetBreakerPolicy()
         .CircuitBreakerAsync(
             handledEventsAllowedBeforeBreaking: 5,
             durationOfBreak: TimeSpan.FromSeconds(30),
-            onBreak: (ex, ts) => { breakerGauge.Set(0); },
-            onReset: () => { breakerGauge.Set(1); },
-            onHalfOpen: () => { breakerGauge.Set(0.5); });
+            onBreak: (ex, ts) => { _breakerGauge.Set(1); },
+            onReset: () => { _breakerGauge.Set(0); },
+            onHalfOpen: () => { _breakerGauge.Set(0.5); });
 }
 
 var app = builder.Build();
