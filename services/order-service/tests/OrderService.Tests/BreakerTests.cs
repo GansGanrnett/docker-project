@@ -32,7 +32,7 @@ public class BreakerTests
         Assert.Equal(1, state); // open
 
         // 6th call — BrokenCircuitException
-        var ex = await Assert.ThrowsAsync<BrokenCircuitException>(async () =>
+        var ex = await Assert.ThrowsAsync<BrokenCircuitException<HttpResponseMessage>>(async () =>
             await breaker.ExecuteAsync(() => client.GetAsync("/")));
 
         // After short break (200ms) → half-open
