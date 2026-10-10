@@ -27,7 +27,7 @@ public class BreakerTests
         // 5 failures → breaker open
         for (int i = 0; i < 5; i++)
         {
-            try { await client.GetAsync("/"); } catch { }
+            try { await breaker.ExecuteAsync(() => client.GetAsync("/")); } catch { }
         }
         Assert.Equal(1, state); // open
 
