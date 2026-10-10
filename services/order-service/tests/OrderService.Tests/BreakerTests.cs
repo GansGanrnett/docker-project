@@ -33,7 +33,7 @@ public class BreakerTests
 
         // 6th call — BrokenCircuitException
         var ex = await Assert.ThrowsAsync<BrokenCircuitException>(async () =>
-            await breaker.ExecuteAsync(async ct => await client.GetAsync("/", ct)));
+            await breaker.ExecuteAsync(() => client.GetAsync("/")));
 
         // After short break (200ms) → half-open
         await Task.Delay(300);
