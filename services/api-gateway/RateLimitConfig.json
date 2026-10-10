@@ -1,0 +1,7 @@
+{
+  "RateLimit": {
+    "PerIp": { "PermitLimit": 100, "WindowSeconds": 60, "SegmentsPerWindow": 6, "QueueLimit": 0 },
+    "PerUser": { "PermitLimit": 300, "WindowSeconds": 60, "SegmentsPerWindow": 6, "QueueLimit": 0 },
+    "AuthStrict": { "PermitLimit": 5, "WindowSeconds": 60, "SegmentsPerWindow": 6, "QueueLimit": 0 }
+  }
+}
