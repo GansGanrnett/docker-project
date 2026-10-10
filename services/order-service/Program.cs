@@ -14,6 +14,8 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Polly;
+using Polly.CircuitBreaker;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -95,7 +97,35 @@ builder.Services.AddHttpClient("catalog", client =>
     client.BaseAddress = new Uri(Environment.GetEnvironmentVariable("CATALOG_SERVICE_URL")
         ?? "http://catalog-service:8082");
     client.Timeout = TimeSpan.FromSeconds(3);
-});
+})
+.AddPolicyHandler(GetRetryPolicy())     // внешний: retry
+.AddPolicyHandler(GetBreakerPolicy()); // внутренний: breaker
+
+// Gauge доступности breaker (стандарт): 1=open/broken, 0=healthy/closed, 0.5=half-open
+BreakerMetrics.BreakerGauge.Set(0);
+
+IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
+{
+    return Policy
+        .Handle<HttpRequestException>()
+        .OrResult<HttpResponseMessage>(r => !r.IsSuccessStatusCode)
+        .WaitAndRetryAsync(3, retryAttempt =>
+            TimeSpan.FromMilliseconds(200 + retryAttempt * 200 + Random.Shared.Next(0, 400)));
+}
+
+IAsyncPolicy<HttpResponseMessage> GetBreakerPolicy()
+{
+    return Policy
+        .Handle<HttpRequestException>()
+        .Or<HttpRequestException>()
+        .OrResult<HttpResponseMessage>(r => !r.IsSuccessStatusCode)
+        .CircuitBreakerAsync(
+            handledEventsAllowedBeforeBreaking: 5,
+            durationOfBreak: TimeSpan.FromSeconds(30),
+            onBreak: (ex, ts) => { BreakerMetrics.BreakerGauge.Set(1); },
+            onReset: () => { BreakerMetrics.BreakerGauge.Set(0); },
+            onHalfOpen: () => { BreakerMetrics.BreakerGauge.Set(0.5); });
+}
 
 var app = builder.Build();
 
@@ -191,3 +221,8 @@ app.MapMetrics("/metrics");
 
 app.Run();
 return 0;
+
+public static class BreakerMetrics
+{
+    public static readonly Gauge BreakerGauge = Metrics.CreateGauge("order_catalog_breaker_state", "Breaker state for catalog dependency (1=open, 0=closed, 0.5=half-open)");
+}
