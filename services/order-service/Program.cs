@@ -14,6 +14,8 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Polly;
+using Polly.CircuitBreaker;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -88,10 +90,6 @@ builder.Services.AddHostedService<PaymentStatusConsumer>();
 // Переводит заказы без результата платежа в PaymentTimeout. При replicaCount > 1
 // перебор выполняет только держатель блокировки из MongoDB. Issue #34.
 builder.Services.AddHostedService<PaymentTimeoutReaper>();
-
-using Polly;
-using Polly.CircuitBreaker;
-using Prometheus;
 
 // HTTP-клиент для обращения к каталогу (цены считаем серверно)
 builder.Services.AddHttpClient("catalog", client =>
