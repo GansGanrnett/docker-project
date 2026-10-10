@@ -89,13 +89,46 @@ builder.Services.AddHostedService<PaymentStatusConsumer>();
 // перебор выполняет только держатель блокировки из MongoDB. Issue #34.
 builder.Services.AddHostedService<PaymentTimeoutReaper>();
 
+using Polly;
+using Polly.CircuitBreaker;
+using Prometheus;
+
 // HTTP-клиент для обращения к каталогу (цены считаем серверно)
 builder.Services.AddHttpClient("catalog", client =>
 {
     client.BaseAddress = new Uri(Environment.GetEnvironmentVariable("CATALOG_SERVICE_URL")
         ?? "http://catalog-service:8082");
     client.Timeout = TimeSpan.FromSeconds(3);
-});
+})
+.AddPolicyHandler(GetRetryPolicy())     // внешний: retry
+.AddPolicyHandler(GetBreakerPolicy()); // внутренний: breaker
+
+// Gauge доступности breaker: 1=up, 0=open, 0.5=half-open
+private static readonly Gauge _breakerGauge = Metrics.CreateGauge("order_catalog_breaker_state", "Breaker state for catalog dependency (1=up, 0=open, 0.5=half-open)");
+_breakerGauge.Set(1);
+
+static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
+{
+    return Policy
+        .Handle<HttpRequestException>()
+        .OrResult<HttpResponseMessage>(r => !r.IsSuccessStatusCode)
+        .WaitAndRetryAsync(3, retryAttempt =>
+            TimeSpan.FromMilliseconds(200 + retryAttempt * 200 + new Random().Next(0, 400)));
+}
+
+static IAsyncPolicy<HttpResponseMessage> GetBreakerPolicy()
+{
+    return Policy
+        .Handle<HttpRequestException>()
+        .Or<HttpRequestException>()
+        .OrResult<HttpResponseMessage>(r => !r.IsSuccessStatusCode)
+        .CircuitBreakerAsync(
+            handledEventsAllowedBeforeBreaking: 5,
+            durationOfBreak: TimeSpan.FromSeconds(30),
+            onBreak: (ex, ts) => { breakerGauge.Set(0); },
+            onReset: () => { breakerGauge.Set(1); },
+            onHalfOpen: () => { breakerGauge.Set(0.5); });
+}
 
 var app = builder.Build();
 
