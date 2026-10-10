@@ -3,15 +3,15 @@
 import sys
 sys.path.insert(0, "../app")
 
-from app.main import aggregates, aggregates_lock, processed_order_ids, _handle_message
+import main
 
 
 def test_duplicate_skipped():
     # Reset state
-    aggregates["total_sales_amount"] = 0.0
-    aggregates["total_orders_count"] = 0
-    aggregates["paid_orders"].clear()
-    processed_order_ids.clear()
+    main.aggregates["total_sales_amount"] = 0.0
+    main.aggregates["total_orders_count"] = 0
+    main.aggregates["paid_orders"].clear()
+    main.processed_order_ids.clear()
 
     class FakeMethod:
         delivery_tag = 1
@@ -23,10 +23,10 @@ def test_duplicate_skipped():
             pass
 
     body = b'{"orderId":"ORD-1","amount":100.0}'
-    _handle_message(FakeCh(), FakeMethod(), None, body)
-    _handle_message(FakeCh(), FakeMethod(), None, body)
+    main._handle_message(FakeCh(), FakeMethod(), None, body)
+    main._handle_message(FakeCh(), FakeMethod(), None, body)
 
-    with aggregates_lock:
-        assert aggregates["total_sales_amount"] == 100.0
-        assert aggregates["total_orders_count"] == 1
-        assert list(aggregates["paid_orders"]).count("ORD-1") == 1
+    with main.aggregates_lock:
+        assert main.aggregates["total_sales_amount"] == 100.0
+        assert main.aggregates["total_orders_count"] == 1
+        assert list(main.aggregates["paid_orders"]).count("ORD-1") == 1
