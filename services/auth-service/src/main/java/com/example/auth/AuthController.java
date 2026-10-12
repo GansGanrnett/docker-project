@@ -15,6 +15,11 @@ public class AuthController {
         this.jwtService = jwtService;
     }
 
+    @GetMapping("/live")
+    public ResponseEntity<?> live() {
+        return ResponseEntity.ok(Map.of("status", "UP", "service", "auth-service"));
+    }
+
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> loginRequest) {
         String username = loginRequest.get("username");
