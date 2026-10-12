@@ -40,6 +40,8 @@ initRedis().catch(console.error);
 
 // Liveness: процесс жив, зависимости не проверяем. Должен отвечать 200
 // даже при лежащем Redis, иначе kubelet перезапустит исправный под.
+app.get('/health/live', (req, res) => res.status(200).json({ status: 'UP', service: 'cart-service' }));
+
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'UP', service: 'cart-service' });
 });
@@ -119,6 +121,12 @@ app.post('/items', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`=== Cart Service successfully started on port ${PORT} ===`);
+});
+
+process.on('SIGTERM', () => {
+    console.log('[CART-SERVICE] SIGTERM, graceful exit');
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 30000);
 });
