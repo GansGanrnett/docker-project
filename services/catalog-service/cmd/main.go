@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -122,10 +125,30 @@ func main() {
 		port = "8082"
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
 	handler := newRootHandler(prometheus.DefaultRegisterer, prometheus.DefaultGatherer)
 
-	log.Printf("=== Clean Go Catalog Service successfully started on port %s ===", port)
-	if err := http.ListenAndServe(":"+port, handler); err != nil {
-		log.Fatalf("Fatal: Failed to start server: %v", err)
+	mux := http.NewServeMux()
+	mux.Handle("/live", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"UP"}`))
+	}))
+	mux.Handle("/", handler)
+
+	srv := &http.Server{Addr: ":" + port, Handler: mux}
+
+	go func() {
+		<-ctx.Done()
+		log.Println("SIGTERM received, graceful shutdown")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	log.Printf("=== Catalog Service started on port %s ===", port)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Fatal: %v", err)
 	}
 }
