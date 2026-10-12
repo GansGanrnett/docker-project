@@ -11,7 +11,17 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Literal
+import signal
 
+_shutdown_requested = threading.Event()
+
+def _sigterm_handler(signum, frame):
+    import logging
+    logging.getLogger(__name__).info("SIGTERM, graceful shutdown.")
+    _shutdown_requested.set()
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
+signal.signal(signal.SIGINT, _sigterm_handler)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -582,6 +592,10 @@ app = FastAPI(title="Payment Service", lifespan=lifespan)
 # словарь _processed_orders не переживал рестарт пода и не разделялся
 # репликами (issue #35, F-22/#41).
 
+
+@app.get("/live")
+def live_check():
+    return {"status": "UP", "service": "payment-service"}
 
 @app.get("/health")
 def health_check():
