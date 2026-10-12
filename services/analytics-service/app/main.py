@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -9,6 +10,8 @@ import pika
 from pika.exceptions import AMQPConnectionError
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 from collections import deque, OrderedDict
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -275,8 +278,8 @@ def _handle_message(ch, method, properties, body):
         amount = float(event.get("amount", 0.0))
         # F-33: нулевая или отрицательная сумма отклоняется — агрегаты не меняются.
         if amount <= 0:
-            print(f"[ANALYTICS-REJECTED] Zero/negative amount for Order ID: {order_id}, Amount: ${amount}")
-            ch.basic_ack(delivery_tag=method.delivery_tag)
+            logger.warning("rejecting invalid amount=%s payload=%s", amount, body)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
 
         print(f"[ANALYTICS] Processed payment event for Order ID: {order_id}, Amount: ${amount}")
