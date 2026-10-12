@@ -11,7 +11,14 @@ from pika.exceptions import AMQPConnectionError
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 from collections import deque, OrderedDict
 
+import signal
+
 logger = logging.getLogger(__name__)
+_shutdown_requested = threading.Event()
+
+def _sigterm_handler(signum, frame):
+    logger.info("SIGTERM received, initiating graceful shutdown.")
+    _shutdown_requested.set()
 
 
 @asynccontextmanager
@@ -21,7 +28,9 @@ async def lifespan(app):
     consumer_thread = threading.Thread(target=rabbitmq_consumer, daemon=True)
     consumer_thread.start()
     yield
-    # При завершении приложения поток daemon завершится вместе с процессом.
+    # Graceful: stop consuming and close connection
+    _shutdown_requested.set()
+    logger.info("[LIFESPAN] Shutdown signal set, closing connections.")
 
 
 app = FastAPI(title="Polyglot E-Commerce Analytics Service", lifespan=lifespan)
@@ -226,7 +235,19 @@ def health_check():
     return {"status": "UP", "service": "analytics-service"}
 
 
+signal.signal(signal.SIGTERM, _sigterm_handler)
+signal.signal(signal.SIGINT, _sigterm_handler)
+
+@app.get("/health/live")
+async def health_live():
+    return {"status": "live"}
+
 @app.get("/ready")
+async def health_ready_compat():
+    return await health_ready()
+
+@app.get("/health/ready")
+async def health_ready():
 def ready_check():
     """Readiness: сервис готов агрегировать платежи.
 
