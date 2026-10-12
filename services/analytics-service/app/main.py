@@ -243,11 +243,6 @@ async def health_live():
     return {"status": "live"}
 
 @app.get("/ready")
-async def health_ready_compat():
-    return await health_ready()
-
-@app.get("/health/ready")
-async def health_ready():
 def ready_check():
     """Readiness: сервис готов агрегировать платежи.
 
@@ -262,6 +257,10 @@ def ready_check():
         status_code=503,
         detail=f"Consumer is not ready (state: {consumer_state.state})",
     )
+
+@app.get("/health/ready")
+async def health_ready():
+    return await ready_check()
 
 
 def _declare_topology(channel):
