@@ -63,6 +63,12 @@ app.get('/metrics', async (req, res) => {
 // Liveness: the process is up and can accept connections. No dependency is
 // checked - a liveness probe that fails during a downstream outage restarts
 // every replica without fixing anything.
+process.on('SIGTERM', () => {
+    console.log('[API-GATEWAY] SIGTERM received, shutting down gracefully.');
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 30000);
+});
+
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'UP', service: 'api-gateway' });
 });
@@ -71,6 +77,7 @@ app.get('/health', (req, res) => {
 // demand. A catalog or auth outage must not pull the gateway out of the load
 // balancer - that belongs to the circuit breaker, and failing readiness would
 // turn a partial outage into a total one.
+app.get('/health/live', (req, res) => res.status(200).json({ status: 'UP', service: 'api-gateway' }));
 app.get('/ready', (req, res) => {
     res.status(200).json({ status: 'UP', service: 'api-gateway' });
 });
@@ -163,7 +170,7 @@ app.use((req, res) => {
 // Exported so tests can drive the routes without binding the deployment port.
 // require.main is the guard: importing this file must not start a listener.
 if (require.main === module) {
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
         console.log(`=== API Gateway Protection started on port ${PORT} ===`);
     });
 }
