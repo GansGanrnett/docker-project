@@ -273,6 +273,11 @@ def _handle_message(ch, method, properties, body):
         event = json.loads(body.decode())
         order_id = event.get("orderId")
         amount = float(event.get("amount", 0.0))
+        # F-33: нулевая или отрицательная сумма отклоняется — агрегаты не меняются.
+        if amount <= 0:
+            print(f"[ANALYTICS-REJECTED] Zero/negative amount for Order ID: {order_id}, Amount: ${amount}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            return
 
         print(f"[ANALYTICS] Processed payment event for Order ID: {order_id}, Amount: ${amount}")
 
