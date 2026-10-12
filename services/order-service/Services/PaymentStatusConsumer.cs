@@ -106,6 +106,23 @@ namespace OrderService.Services
         // MUST be async: BackgroundService.StartAsync awaits this method, so a
         // synchronous blocking loop deadlocks host startup. Kestrel then never
         // binds, the service serves no HTTP and the Prometheus target goes down.
+        public override async Task StopAsync(CancellationToken cancellationToken)
+        {
+            _logger.LogInformation("[RABBITMQ-CONSUMER] Graceful stop requested.");
+            try
+            {
+                if (_channel != null && _channel.IsOpen)
+                    await _channel.CloseAsync(cancellationToken);
+                if (_connection != null && _connection.IsOpen)
+                    await _connection.CloseAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error closing RabbitMQ connections during shutdown.");
+            }
+            await base.StopAsync(cancellationToken);
+        }
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Р РµРєРѕРЅРЅРµРєС‚: РїСЂРё РЅРµРґРѕСЃС‚СѓРїРЅРѕРј Р±СЂРѕРєРµСЂРµ РЅР° СЃС‚Р°СЂС‚Рµ РЅРµ СѓРјРёСЂР°РµРј РјРѕР»С‡Р°, Р° Р¶РґС‘Рј
