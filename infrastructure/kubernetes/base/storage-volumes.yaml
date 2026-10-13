@@ -26,7 +26,7 @@
 #
 # Do NOT let a claim fall through to dynamic provisioning: `no-provisioner`
 # means an unmatched claim stays Pending and is visible, instead of quietly
-# getting a directory nobody declared. Adding catalog-postgres to this file is
+# getting a directory nobody declared.
 # what removed the last claim that used to fall through.
 #
 # No mandatory manual mkdir: `hostPath.type: DirectoryOrCreate` lets kubelet

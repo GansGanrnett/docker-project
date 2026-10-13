@@ -63,9 +63,6 @@ done
 : "${AUTH_DB_HOST:=auth-postgres-service}"
 : "${AUTH_DB_PORT:=5432}"
 : "${AUTH_DB_NAME:=auth_db}"
-: "${CATALOG_DB_HOST:=catalog-postgres-service}"
-: "${CATALOG_DB_PORT:=5432}"
-: "${CATALOG_DB_NAME:=catalog_db}"
 : "${PAYMENT_DB_HOST:=payment-postgres-service}"
 : "${PAYMENT_DB_PORT:=5432}"
 : "${PAYMENT_DB_NAME:=payment_db}"
@@ -80,7 +77,7 @@ export PGPASSFILE=/dev/null
 # PostgreSQL secret was mounted into the Job.
 require_pg_credentials() {
   local name value missing=""
-  for name in AUTH_DB_USER AUTH_DB_PASSWORD CATALOG_DB_USER CATALOG_DB_PASSWORD \
+  for name in AUTH_DB_USER AUTH_DB_PASSWORD \
               PAYMENT_DB_USER PAYMENT_DB_PASSWORD; do
     eval "value=\${$name:-}"
     [ -n "$value" ] || missing="$missing $name"
@@ -195,7 +192,6 @@ case "$MODE" in
     # databases are strictly worse than not having started.
     labels=(); hosts=(); ports=(); dbs=(); users=(); pwds=(); archives=(); dirs=()
     for pair in "auth-postgres|$AUTH_DB_HOST|$AUTH_DB_PORT|$AUTH_DB_NAME|$AUTH_DB_USER|$AUTH_DB_PASSWORD" \
-                "catalog-postgres|$CATALOG_DB_HOST|$CATALOG_DB_PORT|$CATALOG_DB_NAME|$CATALOG_DB_USER|$CATALOG_DB_PASSWORD" \
                 "payment-postgres|$PAYMENT_DB_HOST|$PAYMENT_DB_PORT|$PAYMENT_DB_NAME|$PAYMENT_DB_USER|$PAYMENT_DB_PASSWORD"; do
       IFS='|' read -r label host port db user password <<< "$pair"
 

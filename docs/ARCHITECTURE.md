@@ -18,7 +18,7 @@ NetworkPolicy (входящий трафик разрешён только от 
 |---|---|---|---|---|
 | **API Gateway** | Node.js 20 / Express | `8080` | — | Единая точка входа: JWT-верификация, RBAC, rate-limit, circuit breaker, `/metrics` |
 | **Auth Service** | Java 21 / Spring Boot | `8081` | PostgreSQL (`auth-db`) | Генерация/проверка RSA-ключей, выпуск и валидация JWT |
-| **Catalog Service** | Go 1.22 | `8082` | PostgreSQL (`catalog-db`) | REST-каталог товаров, `/metrics`, `/health` |
+| **Catalog Service** | Go 1.22 | `8082` | — | REST-каталог товаров, `/metrics`, `/health` |
 | **Cart Service** | Node.js / Express | `8083` | Redis (`cart-cache`) | Корзина покупателя, валидация quantity/price |
 | **Order Service** | .NET 8 / ASP.NET Core | `8084` | MongoDB (`order-db`) | Создание заказов, серверные цены из каталога, консьюмер статусов платежа |
 | **Payment Service** | Python 3.11 / FastAPI | `8085` | PostgreSQL (SQLAlchemy) | Валидация карт (алгоритм Луна), публикация событий платежей |
@@ -65,7 +65,6 @@ flowchart LR
 
     subgraph Data["Хранилища"]
         PG_A["PostgreSQL auth-db<br/>:5432"]
-        PG_C["PostgreSQL catalog-db<br/>:5433"]
         REDIS["Redis cart-cache<br/>:6379 (AUTH)"]
         MONGO["MongoDB order-db<br/>:27017"]
     end
@@ -83,8 +82,7 @@ flowchart LR
     GW -->|"/api/v1/analytics (ROLE_ADMIN)"| AN
 
     AUTH --> PG_A
-    CAT --> PG_C
-    CART --> REDIS
+        CART --> REDIS
     ORD --> MONGO
     ORD -.->|"HTTP (серверные цены)"| CAT
 
@@ -129,7 +127,6 @@ flowchart TD
 
     subgraph DataV["Хранилища"]
         PG_A["PostgreSQL auth-db :5432"]
-        PG_C["PostgreSQL catalog-db :5433"]
         REDIS["Redis cart-cache :6379 (AUTH)"]
         MONGO["MongoDB order-db :27017"]
     end
@@ -147,8 +144,7 @@ flowchart TD
     GW --> AN
 
     AUTH --> PG_A
-    CAT --> PG_C
-    CART --> REDIS
+        CART --> REDIS
     ORD --> MONGO
     ORD -.->|"HTTP (серверные цены)"| CAT
 
@@ -296,7 +292,7 @@ sequenceDiagram
 
 **Открытые находки:**
 - **F-16** — circuit breaker на платёжном пути (payment-service / Gateway).
-- **F-23** — catalog-db (PostgreSQL auth/catalog race / настроек).
+- **F-23** — завершено: удалены оставшиеся ссылки на catalog-postgres.
 - **F-39** — три копии `public.pem` (Auth Service, Gateway, Order Service) — требуется ротация через `git filter-repo`.
 - **F-42** — `order.proto` (контракт событий между Order и Payment) — не согласован в Swagger.
 - **F-44** — `.editorconfig` отсутствует в корне.
