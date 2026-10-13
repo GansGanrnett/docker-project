@@ -1,5 +1,5 @@
 # StorageClass referenced by storage-volumes.yaml, auth-postgres.yaml and
-# catalog-postgres.yaml via `storageClassName: manual`.
+# auth-postgres.yaml via `storageClassName: manual-auth` / `manual-catalog`.
 #
 # `provisioner: kubernetes.io/no-provisioner` makes this a genuinely static
 # class: claims are served only by the pre-created PersistentVolumes in

@@ -7,7 +7,7 @@ docker compose ps --format "table {{.Name}}\t{{.Status}}"
 
 echo "---"
 # Postgres-контейнеры: проверяем через pg_isready внутри сервиса
-for service in auth-db catalog-db; do
+for service in auth-db; do
   if docker compose ps "$service" --format "{{.Status}}" | grep -q "Up"; then
     echo -n "$service (pg_isready): "
     docker compose exec -T "$service" pg_isready -U "${AUTH_DB_USER:-auth_user}" || echo "not ready"

@@ -22,7 +22,6 @@ TIMEOUT="${TIMEOUT:-120}"
 # PV name -> hostPath directory. Keep in sync with base/storage-volumes.yaml.
 declare -A PV_PATHS=(
   [postgres-auth-pv]="/mnt/data/postgres-auth"
-  [postgres-catalog-pv]="/mnt/data/postgres-catalog"
   [postgres-payment-pv]="/mnt/data/postgres-payment"
   [mongodb-orders-pv]="/mnt/data/mongodb-orders"
   [redis-cart-pv]="/mnt/data/redis"
@@ -36,7 +35,6 @@ declare -A PV_PATHS=(
 # expected mapping is the only check that catches that mistake.
 declare -A EXPECT=(
   [data-auth-postgres-0]=postgres-auth-pv
-  [data-catalog-postgres-0]=postgres-catalog-pv
   [data-payment-postgres-0]=postgres-payment-pv
   [mongodb-orders-pvc]=mongodb-orders-pv
   [redis-cart-pvc]=redis-cart-pv
@@ -102,7 +100,7 @@ done
 
 echo
 echo "==> claims bind to the PV they were designed for"
-# The StatefulSet claims (data-auth-postgres-0 / data-catalog-postgres-0) only
+# The StatefulSet claims (data-auth-postgres-0) only
 # exist once their StatefulSets have been created, so a missing claim is a
 # warning, not a failure.
 for claim in "${!EXPECT[@]}"; do
@@ -184,7 +182,6 @@ check_init() {
 # them is verified - a PV that binds is not evidence that the service can write
 # to it.
 check_init auth-postgres    init-data-dir     postgres         /var/lib/postgresql/data
-check_init catalog-postgres init-data-dir     postgres         /var/lib/postgresql/data
 check_init payment-postgres init-data-dir     postgres         /var/lib/postgresql/data
 check_init order-mongodb    init-mongo-data   order-mongodb    /data/db
 check_init cart-redis       init-redis-data   cart-redis       /data

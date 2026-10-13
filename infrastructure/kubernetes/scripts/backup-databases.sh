@@ -43,9 +43,6 @@ green() { printf '\033[32m%s\033[0m\n' "$*"; }
 : "${AUTH_DB_HOST:=auth-postgres-service}"
 : "${AUTH_DB_PORT:=5432}"
 : "${AUTH_DB_NAME:=auth_db}"
-: "${CATALOG_DB_HOST:=catalog-postgres-service}"
-: "${CATALOG_DB_PORT:=5432}"
-: "${CATALOG_DB_NAME:=catalog_db}"
 : "${PAYMENT_DB_HOST:=payment-postgres-service}"
 : "${PAYMENT_DB_PORT:=5432}"
 : "${PAYMENT_DB_NAME:=payment_db}"
@@ -67,7 +64,7 @@ timestamp() { date -u +%Y%m%dT%H%M%SZ; }
 # front would abort that job before it touched anything.
 require_pg_credentials() {
   local name value missing=""
-  for name in AUTH_DB_USER AUTH_DB_PASSWORD CATALOG_DB_USER CATALOG_DB_PASSWORD \
+  for name in AUTH_DB_USER AUTH_DB_PASSWORD \
               PAYMENT_DB_USER PAYMENT_DB_PASSWORD; do
     eval "value=\${$name:-}"
     [ -n "$value" ] || missing="$missing $name"
@@ -251,7 +248,6 @@ case "$MODE" in
   postgres)
     require_pg_credentials
     backup_postgres_target auth-postgres    "$AUTH_DB_HOST"    "$AUTH_DB_PORT"    "$AUTH_DB_NAME"    "$AUTH_DB_USER"    "$AUTH_DB_PASSWORD"
-    backup_postgres_target catalog-postgres "$CATALOG_DB_HOST" "$CATALOG_DB_PORT" "$CATALOG_DB_NAME" "$CATALOG_DB_USER" "$CATALOG_DB_PASSWORD"
     backup_postgres_target payment-postgres "$PAYMENT_DB_HOST" "$PAYMENT_DB_PORT" "$PAYMENT_DB_NAME" "$PAYMENT_DB_USER" "$PAYMENT_DB_PASSWORD"
     ;;
   mongodb)
@@ -260,7 +256,6 @@ case "$MODE" in
   all)
     require_pg_credentials
     backup_postgres_target auth-postgres    "$AUTH_DB_HOST"    "$AUTH_DB_PORT"    "$AUTH_DB_NAME"    "$AUTH_DB_USER"    "$AUTH_DB_PASSWORD"
-    backup_postgres_target catalog-postgres "$CATALOG_DB_HOST" "$CATALOG_DB_PORT" "$CATALOG_DB_NAME" "$CATALOG_DB_USER" "$CATALOG_DB_PASSWORD"
     backup_postgres_target payment-postgres "$PAYMENT_DB_HOST" "$PAYMENT_DB_PORT" "$PAYMENT_DB_NAME" "$PAYMENT_DB_USER" "$PAYMENT_DB_PASSWORD"
     backup_mongodb
     ;;
