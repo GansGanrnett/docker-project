@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type Product struct {
@@ -119,6 +120,76 @@ func newRootHandler(registerer prometheus.Registerer, gatherer prometheus.Gather
 	return root
 }
 
+func startConsumer(ctx context.Context) {
+	amqpURL := os.Getenv("AMQP_URL")
+	if amqpURL == "" {
+		amqpURL = "amqp://guest:guest@localhost:5672/"
+	}
+	queue := os.Getenv("CATALOG_QUEUE")
+	if queue == "" {
+		queue = "catalog.saga"
+	}
+
+	conn, err := amqp.Dial(amqpURL)
+	if err != nil {
+		log.Printf("[catalog-consumer] connection failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Printf("[catalog-consumer] channel failed: %v", err)
+		return
+	}
+	defer ch.Close()
+
+	// prefetch = 1 (как analytics F-33)
+	if err := ch.Qos(1, 0, false); err != nil {
+		log.Printf("[catalog-consumer] qos failed: %v", err)
+		return
+	}
+
+	_, err = ch.QueueDeclare(queue, true, false, false, false, nil)
+	if err != nil {
+		log.Printf("[catalog-consumer] queue declare failed: %v", err)
+		return
+	}
+
+	msgs, err := ch.Consume(queue, "", false, false, false, false, nil)
+	if err != nil {
+		log.Printf("[catalog-consumer] consume failed: %v", err)
+		return
+	}
+
+	log.Printf("[catalog-consumer] started on %s queue %s", amqpURL, queue)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[catalog-consumer] graceful shutdown")
+			return
+		case msg, ok := <-msgs:
+			if !ok {
+				return
+			}
+			if processMessage(msg) {
+				msg.Ack(false)
+			} else {
+				msg.Nack(false, false)
+				log.Printf("[catalog-consumer] rejected msg id=%s (requeue=false)", msg.MessageId)
+			}
+		}
+	}
+}
+
+func processMessage(msg amqp.Delivery) bool {
+	// Catalog-side reservation / return on OrderCompensated (F-95)
+	log.Printf("[catalog-consumer] received id=%s body=%s", msg.MessageId, string(msg.Body))
+	// Placeholder: real SagaState logic per #48 / #95
+	return true
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -146,6 +217,8 @@ func main() {
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
 	}()
+
+	go startConsumer(ctx)
 
 	log.Printf("=== Catalog Service started on port %s ===", port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
