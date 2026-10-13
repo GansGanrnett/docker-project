@@ -23,16 +23,6 @@ def _sigterm_handler(signum, frame):
 signal.signal(signal.SIGTERM, _sigterm_handler)
 signal.signal(signal.SIGINT, _sigterm_handler)
 
-@asynccontextmanager
-async def lifespan(app):
-    # Gauge доступности выставляется на старте: если процесс отвечает на
-    # /metrics, он готов принимать трафик. lifespan вместо on_event("startup"),
-    # который deprecated в FastAPI.
-    PAYMENT_UP.set(1)
-    yield
-
-
-app = FastAPI(title="Payment Service", lifespan=lifespan)
 
 PAYMENT_EXCHANGE = "payment.events"
 ROUTING_SUCCESS = "payment.success"
@@ -160,7 +150,6 @@ class HttpMetricsMiddleware:
             HTTP_IN_PROGRESS.labels(method).dec()
 
 
-app.add_middleware(HttpMetricsMiddleware)
 
 
 class PaymentRequest(BaseModel):
@@ -580,6 +569,9 @@ async def lifespan(app):
     платёж не придёт, пока под не станет Ready. Heartbeat с того момента
     сам достраивает соединение, как только брокер вернётся.
     """
+    # Gauge доступности выставляется на старте: если процесс отвечает
+    # на /metrics, он готов принимать трафик.
+    PAYMENT_UP.set(1)
     emitter.start_heartbeat()
     emitter.connect_quietly()
     yield
@@ -587,6 +579,8 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Payment Service", lifespan=lifespan)
+
+app.add_middleware(HttpMetricsMiddleware)
 
 # Идемпотентность живёт в общем Redis (store выше), а не в памяти процесса:
 # словарь _processed_orders не переживал рестарт пода и не разделялся
