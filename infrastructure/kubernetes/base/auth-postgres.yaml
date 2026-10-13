@@ -88,7 +88,7 @@ spec:
     - metadata:
         name: data
       spec:
-        storageClassName: manual
+        storageClassName: manual-auth
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

@@ -27,3 +27,21 @@ metadata:
 provisioner: kubernetes.io/no-provisioner
 reclaimPolicy: Retain
 volumeBindingMode: WaitForFirstConsumer
+---
+# Separate static classes for auth and catalog Postgres (issue #31).
+# Using distinct StorageClasses prevents claims from racing for the same PV.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: manual-auth
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: manual-catalog
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain

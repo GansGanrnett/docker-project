@@ -101,6 +101,21 @@ for pv in "${!PV_PATHS[@]}"; do
 done
 
 echo
+# Issue #31: assert claimRef on auth/catalog PVs (deterministic binding)
+assert_pv_claim() {
+  local pv="$1" expected="$2"
+  actual="$(kubectl get pv "$pv" -o jsonpath='{.spec.claimRef.name}' 2>/dev/null || echo '')"
+  if [ "$actual" != "$expected" ]; then
+    red "    $pv claimRef=$actual EXPECTED $expected"
+    fail=1
+  else
+    green "    $pv claimRef=$actual (expected $expected)"
+  fi
+}
+assert_pv_claim postgres-auth-pv data-auth-postgres-0
+assert_pv_claim postgres-catalog-pv data-catalog-postgres-0
+
+echo
 echo "==> claims bind to the PV they were designed for"
 # The StatefulSet claims (data-auth-postgres-0 / data-catalog-postgres-0) only
 # exist once their StatefulSets have been created, so a missing claim is a
