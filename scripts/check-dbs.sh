@@ -6,15 +6,15 @@ set -e
 docker compose ps --format "table {{.Name}}\t{{.Status}}"
 
 echo "---"
-# Postgres-контейнеры: проверяем через pg_isready внутри сервиса
-for service in auth-db; do
-  if docker compose ps "$service" --format "{{.Status}}" | grep -q "Up"; then
-    echo -n "$service (pg_isready): "
-    docker compose exec -T "$service" pg_isready -U "${AUTH_DB_USER:-auth_user}" || echo "not ready"
-  else
-    echo "$service: container not running"
-  fi
-done
+# Postgres: проверяем через pg_isready внутри сервиса.
+# auth-db — единственный Postgres в docker-compose.yml (catalog-db удалён
+# в F-23, payment-postgres есть только в k8s, не в compose).
+if docker compose ps auth-db --format "{{.Status}}" | grep -q "Up"; then
+  echo -n "auth-db (pg_isready): "
+  docker compose exec -T auth-db pg_isready -U "${AUTH_DB_USER:-auth_user}" || echo "not ready"
+else
+  echo "auth-db: container not running"
+fi
 
 # MongoDB: проверяем командой ping через mongosh
 if docker compose ps order-db --format "{{.Status}}" | grep -q "Up"; then
