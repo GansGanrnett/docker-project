@@ -6,6 +6,7 @@ networks:
 
 volumes:
   postgres_auth_data:
+  payment_postgres_data:
   mongo_order_data:
   redis_data:
   rabbitmq_data:
@@ -157,6 +158,27 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  payment-db:
+    image: postgres:15-alpine
+    container_name: payment-postgres
+    environment:
+      POSTGRES_USER: ${PAYMENT_DB_USER}
+      POSTGRES_PASSWORD: ${PAYMENT_DB_PASSWORD}
+      POSTGRES_DB: ${PAYMENT_DB_NAME}
+    command: ["postgres", "-c", "hba_file=/etc/postgres/pg_hba.conf"]
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - payment_postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/pg_hba.conf:/etc/postgres/pg_hba.conf:ro
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   payment-service:
     build:
       context: ./services/payment-service
@@ -166,10 +188,16 @@ services:
       - "127.0.0.1:${PAYMENT_SERVICE_PORT}:8085"
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      PAYMENT_DATABASE_URL: postgresql://${PAYMENT_DB_USER}:${PAYMENT_DB_PASSWORD}@payment-db:5432/${PAYMENT_DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@cart-cache:6379/15
     networks:
       - ecommerce-network
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      payment-db:
+        condition: service_healthy
+      cart-cache:
         condition: service_healthy
 
   analytics-service:
