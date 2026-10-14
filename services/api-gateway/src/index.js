@@ -123,16 +123,20 @@ app.use('/api/v1/auth', authLimiter, createProxyMiddleware({
     target: process.env.AUTH_SERVICE_URL || 'http://auth-service:8081',
     changeOrigin: true,
     pathRewrite: { '^/api/v1/auth': '' },
-    onProxyReq: (proxyReq, req) => {
-        proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    on: {
+        proxyReq: (proxyReq, req) => {
+            proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+        },
     },
 }));
 
 app.use('/api/v1/cart', verifyToken(), limiters.user, createProxyMiddleware({
     target: process.env.CART_SERVICE_URL || 'http://cart-service:8083',
     changeOrigin: true,
-    onProxyReq: (proxyReq, req) => {
-        if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    on: {
+        proxyReq: (proxyReq, req) => {
+            if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+        },
     },
     pathRewrite: { '^/api/v1/cart': '' },
 }));
@@ -140,8 +144,10 @@ app.use('/api/v1/cart', verifyToken(), limiters.user, createProxyMiddleware({
 app.use('/api/v1/payments', verifyToken('ROLE_ADMIN'), limiters.user, createProxyMiddleware({
     target: process.env.PAYMENT_SERVICE_URL || 'http://payment-service:8085',
     changeOrigin: true,
-    onProxyReq: (proxyReq, req) => {
-        if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    on: {
+        proxyReq: (proxyReq, req) => {
+            if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+        },
     },
     pathRewrite: { '^/api/v1/payments': '/api/v1/internal/payments/process' },
 }));
@@ -150,16 +156,20 @@ app.use('/api/v1/payments', verifyToken('ROLE_ADMIN'), limiters.user, createProx
 app.use('/api/v1/analytics', verifyToken('ROLE_ADMIN'), limiters.user, createProxyMiddleware({
     target: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8000',
     changeOrigin: true,
-    onProxyReq: (proxyReq, req) => {
-        if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    on: {
+        proxyReq: (proxyReq, req) => {
+            if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+        },
     }
 }));
 
 app.use('/api/v1/orders', verifyToken(), limiters.user, createProxyMiddleware({
     target: process.env.ORDER_SERVICE_URL || 'http://order-service:8084',
     changeOrigin: true,
-    onProxyReq: (proxyReq, req) => {
-        if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+    on: {
+        proxyReq: (proxyReq, req) => {
+            if (req.correlationId) proxyReq.setHeader('X-Correlation-ID', req.correlationId);
+        },
     },
 }));
 

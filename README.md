@@ -141,4 +141,8 @@ MONGO_URL=mongodb://localhost:27017 \
 
 Новые записи со значением `PaymentPending` создаются уже самим сервисом,
 поэтому запуск до деплоя нового order-service бесполезен: сначала раскатываем
-сервис, потом запускаем миграцию.
+сервис, потом запускаем миграцию.## Smoke end-to-end
+`ash
+cp .env.example .env
+bash scripts/smoke.sh
+`
