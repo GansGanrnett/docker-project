@@ -117,8 +117,13 @@ services:
     container_name: catalog-service
     ports:
       - "127.0.0.1:${CATALOG_SERVICE_PORT}:8082"
+    environment:
+      AMQP_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
     networks:
       - ecommerce-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   cart-service:
     build:
