@@ -42,9 +42,9 @@ jobs:
             -e 'amqp://[a-zA-Z0-9_]+:[a-zA-Z0-9_]+@' \
             -e 'mongodb(\+srv)?://[a-zA-Z0-9_]+:[^@${]+@' \
             -e 'redis://:[a-zA-Z0-9_]+@' \
-            -e 'postgres://[a-zA-Z0-9_]+:[^@${]+@' \
+            -e 'postgres(ql)?://[a-zA-Z0-9_]+:[^@${]+@' \
             -e 'password\s*[:=]\s*["'"'"'][^"'"'"'\$]' \
-            -E services/ shared/ scripts/; then
+            -E services/ shared/ scripts/ infrastructure/; then
             echo "::error::Hardcoded credentials found in source code"
             exit 1
           fi
@@ -544,7 +544,6 @@ jobs:
         # group с db, а не драйвер.
         working-directory: services/auth-service
         run: mvn -B -ntp test
-
 
   integration-tests:
     name: Integration Tests (order-service, MongoDB)
