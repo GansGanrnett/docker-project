@@ -2,7 +2,7 @@ const rateLimit = require('express-rate-limit');
 const cfg = require('./config');
 
 const byIp = (req) => req.ip || req.connection.remoteAddress || 'unknown';
-const byUser = (req) => (req.headers['x-user-username'] || 'anon');
+const byUser = (req) => (req.user?.sub || byIp(req));
 
 function build(opts, keyGen) {
   return rateLimit({
@@ -18,6 +18,8 @@ function build(opts, keyGen) {
 }
 
 module.exports = {
+  _byIp: byIp,
+  _byUser: byUser,
   global: build(cfg.global, byIp),
   auth: build(cfg.auth, byIp),
   user: build(cfg.user, byUser),

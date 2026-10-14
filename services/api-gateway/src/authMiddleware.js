@@ -19,6 +19,7 @@ module.exports = (requiredRole) => (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, publicKey, { algorithms: ['RS256'] });
+        req.user = decoded;
         req.headers['x-user-username'] = decoded.sub;
         req.headers['x-user-role'] = decoded.role;
 
