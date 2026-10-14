@@ -20,7 +20,11 @@ module.exports = (requiredRole) => (req, res, next) => {
     try {
         const decoded = jwt.verify(token, publicKey, { algorithms: ['RS256'] });
         req.user = decoded;
-        req.headers['x-user-username'] = decoded.sub;
+        // Override client-supplied headers with values from the
+        // verified JWT. Без этого клиент может прислать
+        // x-user-username: victim и выдать себя за другого
+        // пользователя для downstream-сервисов.
+        req.headers["x-user-username"] = decoded.sub;
         req.headers['x-user-role'] = decoded.role;
 
         // Проверка роли: в маршрутах оплаты и заказов допускаются только нужные роли
