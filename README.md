@@ -37,7 +37,7 @@ Client → Nginx → API Gateway → [Auth, Catalog, Cart, Order, Payment, Analy
 
 ```bash
 cp .env.example .env
-# Заполнить пароли: .env нельзя оставлять с плейсхолдерами вида <сгенерируйте-...>
+# Заполнить пароли: заменить все <generate: openssl rand -hex 16> на свои значения
 ```
 
 ### 2. Ключи JWT
