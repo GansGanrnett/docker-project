@@ -47,3 +47,4 @@ opencode.json
 # Мусорный артефакт shell-вывода (см. issue #14)
 exporting
 services/catalog-service/cmd.exe
+scripts/*.exe
