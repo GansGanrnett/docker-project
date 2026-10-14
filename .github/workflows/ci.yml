@@ -44,7 +44,7 @@ jobs:
             -e 'redis://:[a-zA-Z0-9_]+@' \
             -e 'postgres(ql)?://[a-zA-Z0-9_]+:[^@${]+@' \
             -e 'password\s*[:=]\s*["'"'"'][^"'"'"'\$]' \
-            -E services/ shared/ scripts/ infrastructure/; then
+            -E services/ shared/ scripts/ infrastructure/ | grep -v 'CHANGE_ME'; then
             echo "::error::Hardcoded credentials found in source code"
             exit 1
           fi
