@@ -78,7 +78,11 @@ env:
 
 # Секретные переменные из Kubernetes Secret (значения не хранятся в чарте)
 secretEnv:
-  []
+  - name: AMQP_URL
+    valueFrom:
+      secretKeyRef:
+        name: app-secrets
+        key: rabbitmq-url
 
 # Монтирование конфигов/ключей (public.pem и т.п.) из Secret или ConfigMap
 configMounts: []
