@@ -259,8 +259,11 @@ def ready_check():
     )
 
 @app.get("/health/ready")
-async def health_ready():
-    return await ready_check()
+def health_ready():
+    # ready_check is sync (only reads in-memory consumer_state, no I/O).
+    # Previously async + await on sync -> await dict -> TypeError -> 500.
+    # Note: /ready endpoint (not this one) is used by Helm probes.
+    return ready_check()
 
 
 def _declare_topology(channel):

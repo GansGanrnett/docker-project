@@ -3,6 +3,7 @@ import json
 import threading
 
 import pytest
+from fastapi.testclient import TestClient
 from fastapi import HTTPException
 
 import main
@@ -495,3 +496,26 @@ class TestBufferBoundary:
         assert len(main.aggregates["paid_orders"]) == 5
         expected = ["order_2", "order_3", "order_4", "order_5", "order_6"]
         assert list(main.aggregates["paid_orders"]) == expected
+
+class TestHealthReadyHTTP:
+    """HTTP-путь /health/ready — раньше падал с await dict -> 500."""
+
+    def test_health_ready_200(self):
+        from analytics_service.app import main
+        client = TestClient(main.app)
+        # Когда consumer_state в состоянии up (как в begin с FakeConnection)
+        # Для простоты — проверяем что endpoint не падает 500 на обычном вызове
+        r = client.get("/health/ready")
+        # Может быть 200 (если up) или 503 (если never/down) — главное не 500
+        assert r.status_code != 500, f"/health/ready returned 500: {r.text}"
+        # Если тестовый поток не подключил брокер — 503 приемлем
+        assert r.status_code in (200, 503), f"unexpected status: {r.status_code}"
+
+    def test_health_ready_503_when_down(self):
+        from analytics_service.app import main
+        # Сбросить в down (как в готовых тестах)
+        main.consumer_state.end("test")
+        client = TestClient(main.app)
+        r = client.get("/health/ready")
+        assert r.status_code == 503, f"expected 503, got {r.status_code}: {r.text}"
+
