@@ -128,7 +128,7 @@ app.use('/api/v1/auth', authLimiter, createProxyMiddleware({
     },
 }));
 
-app.use('/api/v1/cart', limiters.user, verifyToken(), createProxyMiddleware({
+app.use('/api/v1/cart', verifyToken(), limiters.user, createProxyMiddleware({
     target: process.env.CART_SERVICE_URL || 'http://cart-service:8083',
     changeOrigin: true,
     onProxyReq: (proxyReq, req) => {
@@ -137,7 +137,7 @@ app.use('/api/v1/cart', limiters.user, verifyToken(), createProxyMiddleware({
     pathRewrite: { '^/api/v1/cart': '' },
 }));
 
-app.use('/api/v1/payments', limiters.user, verifyToken('ROLE_ADMIN'), createProxyMiddleware({
+app.use('/api/v1/payments', verifyToken('ROLE_ADMIN'), limiters.user, createProxyMiddleware({
     target: process.env.PAYMENT_SERVICE_URL || 'http://payment-service:8085',
     changeOrigin: true,
     onProxyReq: (proxyReq, req) => {
@@ -147,7 +147,7 @@ app.use('/api/v1/payments', limiters.user, verifyToken('ROLE_ADMIN'), createProx
 }));
 
 // ИСПРАВЛЕНО: Прямое прозрачное проксирование без pathRewrite, ломающего вложенные пути FastAPI
-app.use('/api/v1/analytics', limiters.user, verifyToken('ROLE_ADMIN'), createProxyMiddleware({
+app.use('/api/v1/analytics', verifyToken('ROLE_ADMIN'), limiters.user, createProxyMiddleware({
     target: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8000',
     changeOrigin: true,
     onProxyReq: (proxyReq, req) => {
@@ -155,7 +155,7 @@ app.use('/api/v1/analytics', limiters.user, verifyToken('ROLE_ADMIN'), createPro
     }
 }));
 
-app.use('/api/v1/orders', limiters.user, verifyToken(), createProxyMiddleware({
+app.use('/api/v1/orders', verifyToken(), limiters.user, createProxyMiddleware({
     target: process.env.ORDER_SERVICE_URL || 'http://order-service:8084',
     changeOrigin: true,
     onProxyReq: (proxyReq, req) => {
