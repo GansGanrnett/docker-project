@@ -123,7 +123,7 @@ func newRootHandler(registerer prometheus.Registerer, gatherer prometheus.Gather
 func startConsumer(ctx context.Context) {
 	amqpURL := os.Getenv("AMQP_URL")
 	if amqpURL == "" {
-		amqpURL = "amqp://guest:guest@localhost:5672/"
+		log.Fatal("[catalog-consumer] AMQP_URL not set — set env or exit")
 	}
 	queue := os.Getenv("CATALOG_QUEUE")
 	if queue == "" {

@@ -37,14 +37,14 @@ jobs:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
       - name: Scan for hardcoded credentials
         run: |
-          if grep -rE --include='*.py' --include='*.js' --include='*.java' --include='*.cs' \
+          if grep -rE --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=bin --exclude-dir=obj \
             -e 'Prod[A-Za-z]+Pass[0-9A-Za-z]+' \
             -e 'amqp://[a-zA-Z0-9_]+:[a-zA-Z0-9_]+@' \
             -e 'mongodb(\+srv)?://[a-zA-Z0-9_]+:[^@${]+@' \
             -e 'redis://:[a-zA-Z0-9_]+@' \
             -e 'postgres(ql)?://[a-zA-Z0-9_]+:[^@${]+@' \
             -e 'password\s*[:=]\s*["'"'"'][^"'"'"'\$]' \
-            -E services/ shared/ scripts/ infrastructure/; then
+            -E services/ shared/ scripts/ infrastructure/ | grep -v 'CHANGE_ME'; then
             echo "::error::Hardcoded credentials found in source code"
             exit 1
           fi

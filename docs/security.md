@@ -14,8 +14,7 @@
 
 - Значение в main заменено на `CHANGE_ME` (как остальные секреты в этом файле);
 - Упоминание убрано из ArgoCD README;
-- В `.gitleaks.toml` добавлено правило `k8s-secret-real-value` — ловит
-  реальные значения (не `CHANGE_ME`, не `<...>`) в `infrastructure/**/secrets.yaml`;
+- CI-grep расширен на `.go`/`.sh`/все текстовые файлы (`exclude-dir=.git/node_modules/bin/obj`), добавлен `postgresql://`;
 - CI-grep расширен на `infrastructure/`, добавлен паттерн `postgresql://`.
 
 **Что НЕ сделано (осознанно):**
