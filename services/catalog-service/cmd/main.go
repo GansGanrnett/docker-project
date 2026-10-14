@@ -162,7 +162,7 @@ func startConsumer(ctx context.Context) {
 		return
 	}
 
-	log.Printf("[catalog-consumer] started on %s queue %s", amqpURL, queue)
+	log.Printf("[catalog-consumer] started, queue=%s", queue)
 
 	for {
 		select {
