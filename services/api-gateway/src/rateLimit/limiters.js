@@ -2,7 +2,11 @@ const rateLimit = require('express-rate-limit');
 const cfg = require('./config');
 
 const byIp = (req) => req.ip || req.connection.remoteAddress || 'unknown';
-const byUser = (req) => (req.user?.sub || byIp(req));
+const byUser = (req) => {
+  if (req.user?.sub) return req.user.sub;
+  console.error('[rate-limit] byUser called without req.user.sub');
+  return 'unauthenticated';
+};
 
 function build(opts, keyGen) {
   return rateLimit({
